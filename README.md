@@ -29,12 +29,15 @@ This repository corresponds to the official source code of the TODO conference_n
     ```python process_data.py --data=./Trajectron-plus-plus/experiments/nuScenes/v1.0 --version="v1.0-trainval" --output_path=./data```
 
 ### Training
+Run
+
+
+```python train_risk.py --eval_every 1 --vis_every 1 --conf ./Trajectron-plus-plus/experiments/nuScenes/models/int_ee_me/config.json --data_dir ./data/ --train_data_dict nuScenes_train_full_eccv2020_risk.pkl --eval_data_dict nuScenes_val_full_eccv2020_risk.pkl --offline_scene_graph yes --preprocess_workers 10 --batch_size 256 --log_dir ./models --train_epochs 20 --node_freq_mult_train --log_tag testing_4yp_eccv2020_riskdata_int_ee_me --map_encoding --augment```
+
+
 
 ### Pre-trained Models
 Pretrained models are provided under ```models/```. 
 
 ### Testing
 Run 
-
-```python train_risk.py --eval_every 1 --vis_every 1 --conf ./Trajectron-plus-plus/experiments/nuScenes/models/int_ee_me/config.json --data_dir ./data/ --train_data_dict nuScenes_train_full_eccv2020_risk.pkl --eval_data_dict nuScenes_val_full_eccv2020_risk.pkl --offline_scene_graph yes --preprocess_workers 10 --batch_size 256 --log_dir ./models --train_epochs 20 --node_freq_mult_train --log_tag testing_4yp_eccv2020_riskdata_int_ee_me --map_encoding --augment```
-
