@@ -7,7 +7,7 @@ import torch
 import numpy as np
 import pandas as pd
 
-sys.path.append("../../trajectron")
+sys.path.append("./Trajectron-plus-plus/trajectron")
 from tqdm import tqdm
 from model.model_registrar import ModelRegistrar
 from model.trajectron import Trajectron
