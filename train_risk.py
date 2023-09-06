@@ -76,7 +76,7 @@ def main():
     hyperparams['augment'] = args.augment
     hyperparams['override_attention_radius'] = args.override_attention_radius
     #---- ADDED ----
-    hyperparams['heatmap_data'] = './two_one_normalized_df_hist_all.csv'
+    hyperparams['heatmap_data'] = './ten_one_normalized_df_hist_all.csv'
     hyperparams['grid_data'] = './grid_info_all.csv'
     #---------------
 
