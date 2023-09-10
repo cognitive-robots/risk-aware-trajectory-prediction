@@ -72,15 +72,16 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
         sum_of_weights = 0
         for iter in range(len(map_name)):
             if map_name[iter] != 0: #map successful
-                # risk_weight = 1
-                # # Stack the velocities of all entries in the batch.
-                # vel_stack = torch.stack((inputs[iter,:,2], inputs[iter,:,3]), axis = -1)
-                # vel_norm = np.linalg.norm(vel_stack.cpu(), axis=-1)
-                # vel_norm = vel_norm[~np.isnan(vel_norm)]
+                risk_weight = 1
+                # Stack the velocities of all entries in the batch.
+                vel_stack = torch.stack((inputs[iter,:,2], inputs[iter,:,3]), axis = -1)
+                vel_norm = np.linalg.norm(vel_stack.cpu(), axis=-1)
+                vel_norm = vel_norm[~np.isnan(vel_norm)]
 
-                # ### UNWEIGHT STATIONARY
-                # if np.sum(vel_norm) == 0:
-                #     risk_weight = 0
+                ### UNWEIGHT STATIONARY
+                if np.sum(vel_norm) == 0:
+                    if str(self.node_type) == 'VEHICLE':
+                        risk_weight = 0
                 
             #     # ### SIMPLE SPEED RE-WEIGHTING
             #     # if max(vel_norm) > 10:
@@ -142,9 +143,9 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
             else:
                 log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] 
                 sum_of_weights = sum_of_weights + 1
-        log_likelihood = torch.sum(log_p_y_xz_mean) / sum_of_weights
+        # log_likelihood = torch.sum(log_p_y_xz_mean) / sum_of_weights
         # -----------------------
-        # log_likelihood = torch.mean(log_p_y_xz_mean)
+        log_likelihood = torch.mean(log_p_y_xz_mean)
 
         mutual_inf_q = mutual_inf_mc(self.latent.q_dist)
         mutual_inf_p = mutual_inf_mc(self.latent.p_dist)
