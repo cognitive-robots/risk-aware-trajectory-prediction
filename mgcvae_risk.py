@@ -28,7 +28,9 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
                    heatmap_tensor,
                    x_unf,
                    map_name,
-                   grid_tensor
+                   grid_tensor,
+                   loc_risk,
+                   no_stat
                    # -------------------------------------                   
                    ) -> torch.Tensor:
         """
@@ -78,72 +80,43 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
                 vel_norm = np.linalg.norm(vel_stack.cpu(), axis=-1)
                 vel_norm = vel_norm[~np.isnan(vel_norm)]
 
-                ### UNWEIGHT STATIONARY
-                if np.sum(vel_norm) == 0:
-                    if str(self.node_type) == 'VEHICLE':
-                        risk_weight = 0
-                
-            #     # ### SIMPLE SPEED RE-WEIGHTING
-            #     # if max(vel_norm) > 10:
-            #     #     risk_weight = 100
+                if no_stat:
+                    ### UNWEIGHT STATIONARY
+                    if np.sum(vel_norm) == 0:
+                        if str(self.node_type) == 'VEHICLE':
+                            risk_weight = 0
+                if loc_risk:
+                    ###RISKY LOCATION
+                    
+                    ##describing what each variable is:
+                    #grid_tensor=x_min,x_max,y_min,y_max,x_grid_size,y_grid_size: 
+                    #for maps boston-seaport, singapore-onenorth, singapore-queenstown, singapore-hollandvillage
+                    
+                    ##Work out grid loc from unf_x
+                    map_number = map_name[iter].item()
+                    map_integer = int(map_number)
+                    x_val = (x_unf[iter][-1][0]-grid_tensor[0][map_integer-1])//grid_tensor[4][map_integer-1]
+                    y_val = (x_unf[iter][-1][1]-grid_tensor[2][map_integer-1])//grid_tensor[5][map_integer-1]
 
-            #     ###RISKY SPEED!
+                    # Bear in mind, this assumes a 100x100 grid 
 
-            #     # if map_name[iter] == 1: #Boston! 
-            #     if True:
-            #         v_0 = 10
-            #         vel_bool = vel_norm > v_0
-            #         indeces = np.where(vel_bool==True)
-            #         if len(indeces[0]) != 0:
-            #             max_vel = max(vel_norm[indeces])
-            #             risk_weight = pow((max_vel/v_0),(math.log(1.04,1.01)))
-            #         # if np.sum(vel_norm) == 0:
-            #         #     risk_weight = 10
-            #    # else: #Singapore!
-            #     #     v_0 = 13.89
-            #     #     vel_bool = vel_norm > v_0                   
-            #     #     indeces = np.where(vel_bool==True)
-            #     #     if len(indeces[0]) != 0:
-            #     #         max_vel = max(vel_norm[indeces])
-            #     #         risk_weight = pow((max_vel/v_0),(math.log(1.04,1.01)))  
-
-            #     log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] * risk_weight
-            #     sum_of_weights = sum_of_weights + risk_weight
-
-                ###RISKY LOCATION!!!
-                
-                ##describing what each variable is
-                #grid_tensor=x_min,x_max,y_min,y_max,x_grid_size,y_grid_size: for maps boston-seaport	singapore-onenorth	singapore-queenstown	singapore-hollandvillage
-                
-                ##Work out grid loc from unf_x
-                ##import pdb; pdb.set_trace()
-                map_number = map_name[iter].item()
-                map_integer = int(map_number)
-                x_val = (x_unf[iter][-1][0]-grid_tensor[0][map_integer-1])//grid_tensor[4][map_integer-1]
-                y_val = (x_unf[iter][-1][1]-grid_tensor[2][map_integer-1])//grid_tensor[5][map_integer-1]
-
-                # Bear in mind, this assumes a 100x100 grid. If you change this (more detailed potentially) then these values will need to be changed. 
-
-                if y_val == 0:
-                    y_val = 1
-                if x_val == 100:
-                    x_val = 99
-                grid_loc = (100*(100-y_val)) + x_val
-                grid_loc_int = int(grid_loc.item())
-                if grid_loc_int > 10000:
-                    #print('Something went wrong! grid_loc out of bounds')
-                    #import pdb; pdb.set_trace()
-                    log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] 
-                    sum_of_weights = sum_of_weights + 1
-                #Multiply Loss term
-                else:
-                    log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] * heatmap_tensor[grid_loc_int][map_integer]
-                    sum_of_weights = sum_of_weights + heatmap_tensor[grid_loc_int][map_integer]
+                    if y_val == 0:
+                        y_val = 1
+                    if x_val == 100:
+                        x_val = 99
+                    grid_loc = (100*(100-y_val)) + x_val
+                    grid_loc_int = int(grid_loc.item())
+                    if grid_loc_int > 10000:
+                        log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] 
+                        sum_of_weights = sum_of_weights + 1
+                    #Multiply Loss term
+                    else:
+                        log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] * heatmap_tensor[grid_loc_int][map_integer]
+                        sum_of_weights = sum_of_weights + heatmap_tensor[grid_loc_int][map_integer]
 
             else:
                 log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] 
                 sum_of_weights = sum_of_weights + 1
-        # log_likelihood = torch.sum(log_p_y_xz_mean) / sum_of_weights
         # -----------------------
         log_likelihood = torch.mean(log_p_y_xz_mean)
 

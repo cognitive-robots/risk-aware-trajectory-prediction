@@ -27,7 +27,7 @@ class TrajectronRisk(Trajectron):
                                                                             edge_types,
                                                                             log_writer=self.log_writer)
 
-    def train_loss(self, batch, node_type, heatmap_tensor, grid_tensor):
+    def train_loss(self, batch, node_type, heatmap_tensor, grid_tensor, loc_risk=False, no_stat=False):
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
@@ -68,7 +68,9 @@ class TrajectronRisk(Trajectron):
                                 heatmap_tensor=heatmap_tensor,
                                 x_unf=x_unf,
                                 map_name=map_name,
-                                grid_tensor=grid_tensor
+                                grid_tensor=grid_tensor,
+                                loc_risk=loc_risk,
+                                no_stat=no_stat
                                 # -------------------------------------
 
                                 )
