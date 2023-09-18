@@ -1,6 +1,6 @@
 # Risk-aware Trajectory Prediction by Incorporating Spatio-temporal Traffic Interaction Analysis
 
-This repository corresponds to the official source code of the Risk-aware Trajectory Prediction by Incorporating Spatio-temporal Traffic Interaction Analysis paper:
+This repository corresponds to the official source code of the paper:
 
 <a href="TODO arxiv link">Risk-aware Trajectory Prediction by Incorporating Spatio-temporal Traffic Interaction Analysis</a>
 
