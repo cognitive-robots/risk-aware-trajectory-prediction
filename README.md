@@ -19,12 +19,9 @@ This repository corresponds to the official source code of the paper:
 
 ### Data
 
-#### ETH-UCY: 
-
-#### nuScenes:
-1. Follow the instructions within the Trajectron++ repository to download the full nuScenes dataset into the ```4yp-roadrisk/Trajectron_plus_plus/experiments/nuScenes``` folder
-2. activate the trajectron++ conda environment
-3. from the ```4yp-roadrisk/``` directory run
+1. Follow the instructions within the Trajectron++ repository to download the full nuScenes dataset into the ```4yp-roadrisk/Trajectron_plus_plus/experiments/nuScenes``` folder (to do this within commandline, follow https://github.com/nutonomy/nuscenes-devkit/issues/110)
+3. activate the trajectron++ conda environment
+4. from the ```4yp-roadrisk/``` directory run
 
     ```python process_data.py --data=./Trajectron-plus-plus/experiments/nuScenes/v1.0 --version="v1.0-trainval" --output_path=./data```
 
