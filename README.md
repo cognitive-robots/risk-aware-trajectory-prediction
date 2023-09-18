@@ -29,7 +29,7 @@ This repository corresponds to the official source code of the paper:
 Run
 ```python train_risk.py --eval_every 1 --vis_every 1 --conf ./Trajectron-plus-plus/experiments/nuScenes/models/int_ee_me/config.json --data_dir ./data/ --train_data_dict nuScenes_train_full.pkl --eval_data_dict nuScenes_val_full.pkl --offline_scene_graph yes --preprocess_workers 10 --batch_size 256 --log_dir ./models --train_epochs 20 --node_freq_mult_train --log_tag testing_int_ee_me --map_encoding --augment```
 
-with flag `--location_risk` for Location-Risk model, `no_stationary` for No-Stationary model, or both for Location-Risk+No-Stationary model
+with flag `--location_risk` for Location-Risk model, `--no_stationary` for No-Stationary model, or both for Location-Risk+No-Stationary model
 
 
 
