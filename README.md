@@ -11,9 +11,9 @@ This repository corresponds to the official source code of the paper:
 
     ```git clone --recurse-submodules git@github.com:StanfordASL/Trajectron-plus-plus.git```
 5. Create the trajectron++ conda environment (instructions are within <a href="https://github.com/StanfordASL/Trajectron-plus-plus">Trajectron++ repo</a>)
-6. Make folders for the data and models by running
+6. Make folders for the data by running
 
-    ```mkdir data models```
+    ```mkdir data```
 
    from the ```4yp-roadrisk/``` directory 
 
@@ -39,4 +39,8 @@ Pretrained models are provided under ```models/```.
 ### Testing
 Run ```python evaluate_nuScenes_risk.py --model models/location_risk_int_ee_me/ --checkpoint=12 --data ./data/nuScenes_test_full.pkl --output_path ./results/ --output_tag location_risk_int_ee_me --node_type VEHICLE --prediction_horizon 2 4 6 8```
 
-for any of the models within `models/`
+for any of the models within `models/` (tip - make sure to change the output_tag as well).
+
+### Heatmap Generation
+To redo the heatmap generation (i.e. redo the generation of `grid_info_all.csv`, `ten_one_normalized_df_hist_all.csv`, and `ten_one_normalized_df_hist_all.csv`), run `heatmap_generator.py` from the `heatmap_generation` folder. The csv files within the folder contain the distances from every VRU to every moving vehicle throughout the training/validation split of the full NuScenes dataset, for each map. To use the re-generated heatmap csvs, replace `grid_info_all.csv`, `ten_one_normalized_df_hist_all.csv`, and `ten_one_normalized_df_hist_all.csv` within the main folder of the repo with the newly generated ones. 
+
