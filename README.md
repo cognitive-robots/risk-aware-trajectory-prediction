@@ -11,9 +11,9 @@ This repository corresponds to the official source code of the paper:
 
     ```git clone --recurse-submodules git@github.com:StanfordASL/Trajectron-plus-plus.git```
 5. Create the trajectron++ conda environment (instructions are within <a href="https://github.com/StanfordASL/Trajectron-plus-plus">Trajectron++ repo</a>)
-6. Make folders for the data and models by running
+6. Make folders for the data by running
 
-    ```mkdir data models```
+    ```mkdir data```
 
    from the ```4yp-roadrisk/``` directory 
 
