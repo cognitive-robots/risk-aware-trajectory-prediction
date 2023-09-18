@@ -1,8 +1,8 @@
-# TODO Paper Name
+# Risk-aware Trajectory Prediction by Incorporating Spatio-temporal Traffic Interaction Analysis
 
-This repository corresponds to the official source code of the TODO conference_name paper:
+This repository corresponds to the official source code of the Risk-aware Trajectory Prediction by Incorporating Spatio-temporal Traffic Interaction Analysis paper:
 
-<a href="TODO arxiv link">TODO Paper Name</a>
+<a href="TODO arxiv link">Risk-aware Trajectory Prediction by Incorporating Spatio-temporal Traffic Interaction Analysis</a>
 
 ### Download
 1. Clone the git repository
