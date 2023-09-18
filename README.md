@@ -34,7 +34,7 @@ with flag `--location_risk` for Location-Risk model, `--no_stationary` for No-St
 
 
 ### Pre-trained Models
-Pretrained models are provided under ```models/```. 
+Pretrained models are provided under ```models/``` (tip - make sure to change the output_tag as well). 
 
 ### Testing
 Run ```python evaluate_nuScenes_risk.py --model models/location_risk_int_ee_me/ --checkpoint=12 --data ./data/nuScenes_test_full.pkl --output_path ./results/ --output_tag location_risk_int_ee_me --node_type VEHICLE --prediction_horizon 2 4 6 8```
