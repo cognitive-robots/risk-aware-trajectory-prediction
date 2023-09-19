@@ -113,7 +113,12 @@ def visualize_heatmap(df_map_loc_full_dropped_vru, hist, map_choice, nusc):
 def load_map(map_choice, dataroot):
     nusc_map = NuScenesMap(dataroot=dataroot, map_name=map_choice)
 
-    sample_drivable_area = nusc_map.drivable_area[0]
+    # map of whole area is drivable_area[0] for all except hollandvillage, which is drivable_area[2]
+    n = 0
+    if map_choice == 'singapore-hollandvillage':
+        n = 2
+    
+    sample_drivable_area = nusc_map.drivable_area[n]
     if visualize:
         fig, ax = nusc_map.render_record('drivable_area', sample_drivable_area['token'], other_layers=[])
         plt.show()

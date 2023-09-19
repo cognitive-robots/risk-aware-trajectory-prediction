@@ -187,10 +187,10 @@ if __name__ == "__main__":
                 eval_fde_batch_errors = np.hstack((eval_fde_batch_errors, batch_error_dict[args.node_type]['fde']))
                 eval_kde_nll = np.hstack((eval_kde_nll, batch_error_dict[args.node_type]['kde']))
 
-        pd.DataFrame({'value': eval_ade_batch_errors, 'metric': 'ade', 'type': 'full'}
-                     ).to_csv(os.path.join(args.output_path, args.output_tag + "_" + str(ph) + '_ade_full.csv'))
-        pd.DataFrame({'value': eval_fde_batch_errors, 'metric': 'fde', 'type': 'full'}
-                     ).to_csv(os.path.join(args.output_path, args.output_tag + "_" + str(ph) + '_fde_full.csv'))
+        # pd.DataFrame({'value': eval_ade_batch_errors, 'metric': 'ade', 'type': 'full'}
+        #              ).to_csv(os.path.join(args.output_path, args.output_tag + "_" + str(ph) + '_ade_full.csv'))
+        # pd.DataFrame({'value': eval_fde_batch_errors, 'metric': 'fde', 'type': 'full'}
+        #              ).to_csv(os.path.join(args.output_path, args.output_tag + "_" + str(ph) + '_fde_full.csv'))
         pd.DataFrame({'value': eval_kde_nll, 'metric': 'kde', 'type': 'full'}
                      ).to_csv(os.path.join(args.output_path, args.output_tag + "_" + str(ph) + '_kde_full.csv'))
         pd.DataFrame({'value': eval_road_viols, 'metric': 'road_viols', 'type': 'full'}
