@@ -9,15 +9,16 @@ import json
 import random
 import pathlib
 import warnings
+import argparse
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from trajectron_risk import TrajectronRisk
 from preprocessing_risk import EnvironmentDatasetRisk
+from arg_parser_risk import args 
 sys.path.append("./Trajectron-plus-plus/")
 sys.path.append("./Trajectron-plus-plus/trajectron")
 import visualization
 import evaluation
-from argument_parser import args
 from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
 from model.dataset import collate
@@ -98,6 +99,8 @@ def main():
     # #---- ADDED ----
     print('| Heatmap Data: %s' % hyperparams['heatmap_data'])
     print('| Grid Data: %s' % hyperparams['grid_data'])
+    print('| No-Stationary: %s' % args.no_stationary)
+    print('| Location-Risk: %s' % args.location_risk)
     # #---------------
     print('-----------------------')
 
@@ -277,7 +280,8 @@ def main():
                 trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
                 # -------- ADDED HEATMAP_TENSOR -------
-                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor)
+                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor, 
+                    loc_risk=args.location_risk, no_stat=args.no_stationary)
                 # -------------------------------------
                 pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
                 train_loss.backward()
