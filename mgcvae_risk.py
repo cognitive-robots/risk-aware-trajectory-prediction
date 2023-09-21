@@ -25,7 +25,8 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
                    map,
                    prediction_horizon,
                    # -------------- ADDED ----------------
-                   heatmap_tensor,
+                   heatmap_tensor_ped,
+                   heatmap_tensor_veh,
                    x_unf,
                    map_name,
                    grid_tensor,
@@ -111,8 +112,12 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
                         sum_of_weights = sum_of_weights + 1
                     #Multiply Loss term
                     else:
-                        log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] * heatmap_tensor[grid_loc_int][map_integer]
-                        sum_of_weights = sum_of_weights + heatmap_tensor[grid_loc_int][map_integer]
+                        if str(self.node_type) == 'PEDESTRIAN':
+                            log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] * heatmap_tensor_ped[grid_loc_int][map_integer]
+                            sum_of_weights = sum_of_weights + heatmap_tensor_ped[grid_loc_int][map_integer]
+                        if str(self.node_type) == 'VEHICLE':
+                            log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] * heatmap_tensor_veh[grid_loc_int][map_integer]
+                            sum_of_weights = sum_of_weights + heatmap_tensor_veh[grid_loc_int][map_integer]
 
             else:
                 log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] 

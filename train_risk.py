@@ -77,7 +77,8 @@ def main():
     hyperparams['augment'] = args.augment
     hyperparams['override_attention_radius'] = args.override_attention_radius
     #---- ADDED ----
-    hyperparams['heatmap_data'] = './ten_one_normalized_df_hist_all.csv'
+    hyperparams['heatmap_data_ped'] = './max_kde_pedestrian_ten_one_normalized_df_all.csv'
+    hyperparams['heatmap_data_veh'] = './max_kde_vehicle_ten_one_normalized_df_all.csv'
     hyperparams['grid_data'] = './grid_info_all.csv'
     #---------------
 
@@ -97,7 +98,8 @@ def main():
     print('| MHL: %s' % hyperparams['minimum_history_length'])
     print('| PH: %s' % hyperparams['prediction_horizon'])
     # #---- ADDED ----
-    print('| Heatmap Data: %s' % hyperparams['heatmap_data'])
+    print('| Pedestrian Heatmap Data: %s' % hyperparams['heatmap_data_ped'])
+    print('| Vehicle Heatmap Data: %s' % hyperparams['heatmap_data_veh'])
     print('| Grid Data: %s' % hyperparams['grid_data'])
     print('| No-Stationary: %s' % args.no_stationary)
     print('| Location-Risk: %s' % args.location_risk)
@@ -109,9 +111,12 @@ def main():
 
     # #---- ADDED ----
     import pandas as pd
-    if hyperparams['heatmap_data']:
-        heatmap_df = pd.read_csv(hyperparams['heatmap_data'])
-        heatmap_tensor = torch.tensor(heatmap_df.values)
+    if hyperparams['heatmap_data_ped']:
+        heatmap_df_ped = pd.read_csv(hyperparams['heatmap_data_ped'])
+        heatmap_tensor_ped = torch.tensor(heatmap_df_ped.values)
+    if hyperparams['heatmap_data_veh']:
+        heatmap_df_veh = pd.read_csv(hyperparams['heatmap_data_veh'])
+        heatmap_tensor_veh = torch.tensor(heatmap_df_veh.values)
 
     if hyperparams['grid_data']:
         grid_df = pd.read_csv(hyperparams['grid_data'])
@@ -280,7 +285,7 @@ def main():
                 trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
                 # -------- ADDED HEATMAP_TENSOR -------
-                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor, 
+                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor_ped, heatmap_tensor_veh, grid_tensor, 
                     loc_risk=args.location_risk, no_stat=args.no_stationary)
                 # -------------------------------------
                 pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
