@@ -1,3 +1,12 @@
+#########################################################################################################
+# Instructions for running script:                                                                      #
+#                                                                                                       #    
+# python visualize_examples.py --model ./models/int_ee_me/                                              #
+# --checkpoint=12 --data ../data/nuScenes_test_full.pkl --node_type PEDESTRIAN --prediction_horizon 6   #
+#                                                                                                       #    
+# Replace with correct model, desired data, and node type                                               #            
+#                                                                                                       #
+#########################################################################################################
 import sys
 import os
 import dill
@@ -29,8 +38,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--model", help="model full path", type=str)
 parser.add_argument("--checkpoint", help="model checkpoint to evaluate", type=int)
 parser.add_argument("--data", help="full path to data file", type=str)
-parser.add_argument("--output_path", help="path to output csv file", type=str)
-parser.add_argument("--output_tag", help="name tag for output file", type=str)
 parser.add_argument("--node_type", help="node type to evaluate", type=str)
 parser.add_argument("--prediction_horizon", nargs='+', help="prediction horizon", type=int, default=None)
 args = parser.parse_args()
