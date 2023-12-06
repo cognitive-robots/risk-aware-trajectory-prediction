@@ -9,6 +9,7 @@ import json
 import random
 import pathlib
 import warnings
+import wandb
 import argparse
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -24,6 +25,7 @@ from model.model_utils import cyclical_lr
 from model.dataset import collate
 from tensorboardX import SummaryWriter
 # torch.autograd.set_detect_anomaly(True)
+wandb.login()
 
 if not torch.cuda.is_available() or args.device == 'cpu':
     args.device = torch.device('cpu')
@@ -269,7 +271,14 @@ def main():
         elif hyperparams['learning_rate_style'] == 'exp':
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
-
+    run = wandb.init(
+        # Set the project where this run will be logged
+        project="train-risk",
+        # Track hyperparameters and run metadata
+        config={
+            "learning_rate": hyperparams['learning_rate'],
+            "epochs": args.train_epochs,
+        })
     #################################
     #           TRAINING            #
     #################################
@@ -277,15 +286,18 @@ def main():
     for epoch in range(1, args.train_epochs + 1):
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
+        train_losses = {}
         for node_type, data_loader in train_data_loader.items():
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
+            if node_type not in train_losses.keys():
+                train_losses[node_type] = []
             for batch in pbar:
                 trajectron.set_curr_iter(curr_iter)
                 trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
                 # -------- ADDED HEATMAP_TENSOR -------
-                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor_ped, heatmap_tensor_veh, grid_tensor, 
+                train_loss, nll = trajectron.train_loss(batch, node_type, heatmap_tensor_ped, heatmap_tensor_veh, grid_tensor, 
                     loc_risk=args.location_risk, no_stat=args.no_stationary)
                 # -------------------------------------
                 pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
@@ -303,12 +315,20 @@ def main():
                                           lr_scheduler[node_type].get_last_lr()[0],
                                           curr_iter)
                     log_writer.add_scalar(f"{node_type}/train/loss", train_loss, curr_iter)
+                # WANDB: record eval loss definition to make sure same scale
+                eval_loss_for_train_batch = eval_trajectron.eval_loss(batch, node_type)
+                train_losses[node_type].append(eval_loss_for_train_batch.item())
 
                 curr_iter += 1
             curr_iter_node_type[node_type] = curr_iter
         train_dataset.augment = False
         if args.eval_every is not None or args.vis_every is not None:
             eval_trajectron.set_curr_iter(epoch)
+
+        # WANDB: record epoch
+        wandb.log({"epoch": epoch})
+        for node_type in train_losses.keys():
+            wandb.log({"train loss {}".format(node_type): np.mean(train_losses[node_type])})
 
         #################################
         #        VISUALIZATION          #
@@ -399,12 +419,16 @@ def main():
             model_registrar.to(args.eval_device)
             with torch.no_grad():
                 # Calculate evaluation loss
+                eval_losses = {}
                 for node_type, data_loader in eval_data_loader.items():
+                    if node_type not in eval_losses.keys():
+                        eval_losses[node_type] = []
                     eval_loss = []
                     print(f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
                     pbar = tqdm(data_loader, ncols=80)
                     for batch in pbar:
                         eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type)
+                        eval_losses[node_type].append(eval_loss_node_type.item())
                         pbar.set_description(f"Epoch {epoch}, {node_type} L: {eval_loss_node_type.item():.2f}")
                         eval_loss.append({node_type: {'nll': [eval_loss_node_type]}})
                         del batch
@@ -413,6 +437,8 @@ def main():
                                                 log_writer,
                                                 f"{node_type}/eval_loss",
                                                 epoch)
+                for node_type in eval_losses.keys():
+                    wandb.log({"eval loss {}".format(node_type): np.mean(eval_losses[node_type])})
 
                 # Predict batch timesteps for evaluation dataset evaluation
                 eval_batch_errors = []
