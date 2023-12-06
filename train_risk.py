@@ -286,12 +286,9 @@ def main():
     for epoch in range(1, args.train_epochs + 1):
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
-        train_losses = {}
         for node_type, data_loader in train_data_loader.items():
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
-            if node_type not in train_losses.keys():
-                train_losses[node_type] = []
             for batch in pbar:
                 trajectron.set_curr_iter(curr_iter)
                 trajectron.step_annealers(node_type)
@@ -315,9 +312,10 @@ def main():
                                           lr_scheduler[node_type].get_last_lr()[0],
                                           curr_iter)
                     log_writer.add_scalar(f"{node_type}/train/loss", train_loss, curr_iter)
+                # train_losses[node_type].append(nll.item())
                 # WANDB: record eval loss definition to make sure same scale
                 eval_loss_for_train_batch = eval_trajectron.eval_loss(batch, node_type)
-                train_losses[node_type].append(eval_loss_for_train_batch.item())
+                wandb.log({"train loss {}".format(node_type): eval_loss_for_train_batch.item()})
 
                 curr_iter += 1
             curr_iter_node_type[node_type] = curr_iter
@@ -327,8 +325,6 @@ def main():
 
         # WANDB: record epoch
         wandb.log({"epoch": epoch})
-        for node_type in train_losses.keys():
-            wandb.log({"train loss {}".format(node_type): np.mean(train_losses[node_type])})
 
         #################################
         #        VISUALIZATION          #
@@ -419,16 +415,13 @@ def main():
             model_registrar.to(args.eval_device)
             with torch.no_grad():
                 # Calculate evaluation loss
-                eval_losses = {}
                 for node_type, data_loader in eval_data_loader.items():
-                    if node_type not in eval_losses.keys():
-                        eval_losses[node_type] = []
                     eval_loss = []
                     print(f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
                     pbar = tqdm(data_loader, ncols=80)
                     for batch in pbar:
                         eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type)
-                        eval_losses[node_type].append(eval_loss_node_type.item())
+                        wandb.log({"eval loss {}".format(node_type): eval_loss_node_type.item()})
                         pbar.set_description(f"Epoch {epoch}, {node_type} L: {eval_loss_node_type.item():.2f}")
                         eval_loss.append({node_type: {'nll': [eval_loss_node_type]}})
                         del batch
@@ -437,8 +430,6 @@ def main():
                                                 log_writer,
                                                 f"{node_type}/eval_loss",
                                                 epoch)
-                for node_type in eval_losses.keys():
-                    wandb.log({"eval loss {}".format(node_type): np.mean(eval_losses[node_type])})
 
                 # Predict batch timesteps for evaluation dataset evaluation
                 eval_batch_errors = []
