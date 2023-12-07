@@ -294,7 +294,7 @@ def main():
                 trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
                 # -------- ADDED HEATMAP_TENSOR -------
-                train_loss, nll = trajectron.train_loss(batch, node_type, heatmap_tensor_ped, heatmap_tensor_veh, grid_tensor, 
+                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor_ped, heatmap_tensor_veh, grid_tensor, 
                     loc_risk=args.location_risk, no_stat=args.no_stationary)
                 # -------------------------------------
                 pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
@@ -315,7 +315,8 @@ def main():
                 # train_losses[node_type].append(nll.item())
                 # WANDB: record eval loss definition to make sure same scale
                 eval_loss_for_train_batch = eval_trajectron.eval_loss(batch, node_type)
-                wandb.log({"train loss {}".format(node_type): eval_loss_for_train_batch.item()})
+                wandb.log({"train loss {}".format(node_type): train_loss.item()})
+                wandb.log({"eval loss on train set {}".format(node_type): eval_loss_for_train_batch.item()})
 
                 curr_iter += 1
             curr_iter_node_type[node_type] = curr_iter
@@ -421,7 +422,10 @@ def main():
                     pbar = tqdm(data_loader, ncols=80)
                     for batch in pbar:
                         eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type)
-                        wandb.log({"eval loss {}".format(node_type): eval_loss_node_type.item()})
+                        train_loss_node_type = trajectron.train_loss(batch, node_type, heatmap_tensor_ped, heatmap_tensor_veh, grid_tensor, 
+                                                            loc_risk=args.location_risk, no_stat=args.no_stationary)
+                        wandb.log({"train loss on val set {}".format(node_type): train_loss_node_type.item()})
+                        wandb.log({"eval loss{}".format(node_type): eval_loss_node_type.item()})
                         pbar.set_description(f"Epoch {epoch}, {node_type} L: {eval_loss_node_type.item():.2f}")
                         eval_loss.append({node_type: {'nll': [eval_loss_node_type]}})
                         del batch
