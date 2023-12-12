@@ -288,10 +288,12 @@ def main():
         train_dataset.augment = args.augment
         train_losses = {}
         eval_losses_on_train = {}
+        counts = {}
         for node_type, data_loader in train_data_loader.items():
             if node_type not in train_losses.keys():
                 train_losses[node_type] = []
                 eval_losses_on_train[node_type] = []
+                counts[node_type] = []
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
             for batch in pbar:
@@ -324,6 +326,7 @@ def main():
                 wandb.log({"eval loss on train set {}".format(node_type): eval_loss_for_train_batch.item()})
                 train_losses[node_type].append(train_loss.item())
                 eval_losses_on_train[node_type].append(eval_loss_for_train_batch.item())
+                counts[node_type].append(batch[0].shape[0])
 
                 curr_iter += 1
             curr_iter_node_type[node_type] = curr_iter
@@ -334,8 +337,10 @@ def main():
         # WANDB: record epoch
         wandb.log({"epoch": epoch})
         for node_type in train_losses.keys():
-            wandb.log({"avg train loss {}".format(node_type): np.mean(train_losses[node_type])})
-            wandb.log({"avg eval loss on train set {}".format(node_type): np.mean(eval_losses_on_train[node_type])})
+            wandb.log({"avg train loss {}".format(node_type): 
+                    np.average(train_losses[node_type], weights=counts[node_type])})
+            wandb.log({"avg eval loss on train set {}".format(node_type): 
+                    np.average(eval_losses_on_train[node_type], weights=counts[node_type])})
 
         #################################
         #        VISUALIZATION          #
@@ -428,10 +433,12 @@ def main():
                 # Calculate evaluation loss
                 eval_losses = {}
                 train_losses_on_val_set = {}
+                counts = {}
                 for node_type, data_loader in eval_data_loader.items():
                     if node_type not in eval_losses.keys():
                         eval_losses[node_type] = []
                         train_losses_on_val_set[node_type] = []
+                        counts[node_type] = []
                     eval_loss = []
                     print(f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
                     pbar = tqdm(data_loader, ncols=80)
@@ -443,6 +450,7 @@ def main():
                         train_losses_on_val_set[node_type].append(train_loss_node_type.item())
                         wandb.log({"eval loss {}".format(node_type): eval_loss_node_type.item()})
                         eval_losses[node_type].append(eval_loss_node_type.item())
+                        counts[node_type].append(batch[0].shape[0])
                         pbar.set_description(f"Epoch {epoch}, {node_type} L: {eval_loss_node_type.item():.2f}")
                         eval_loss.append({node_type: {'nll': [eval_loss_node_type]}})
                         del batch
@@ -452,8 +460,10 @@ def main():
                                                 f"{node_type}/eval_loss",
                                                 epoch)
                 for node_type in eval_losses.keys():
-                    wandb.log({"avg train loss on val set {}".format(node_type): np.mean(train_losses_on_val_set[node_type])})
-                    wandb.log({"avg eval loss {}".format(node_type): np.mean(eval_losses[node_type])})
+                    wandb.log({"avg train loss on val set {}".format(node_type): 
+                            np.average(train_losses_on_val_set[node_type], weights=counts[node_type])})
+                    wandb.log({"avg eval loss {}".format(node_type): 
+                            np.average(eval_losses[node_type], weights=counts[node_type])})
 
                 # Predict batch timesteps for evaluation dataset evaluation
                 eval_batch_errors = []

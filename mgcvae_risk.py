@@ -128,7 +128,7 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
         mutual_inf_q = mutual_inf_mc(self.latent.q_dist)
         mutual_inf_p = mutual_inf_mc(self.latent.p_dist)
 
-        ELBO = log_likelihood - self.kl_weight * kl + 1. * mutual_inf_p
+        ELBO = log_likelihood #- self.kl_weight * kl + 1. * mutual_inf_p
         loss = -ELBO
 
         if self.hyperparams['log_histograms'] and self.log_writer is not None:
