@@ -8,6 +8,21 @@ sys.path.append("./Trajectron-plus-plus/trajectron")
 from model.dataset.preprocessing import collate, get_relative_robot_traj
 from model.dataset.dataset import EnvironmentDataset, NodeTypeDataset
 
+map_names = ['N/A','boston-seaport',
+            'singapore-onenorth',
+            'singapore-queenstown',
+            'singapore-hollandvillage']
+
+def trajectory_curvature(x, y):
+    t = torch.cat((x[:,:2], y), dim=0)
+    path_distance = torch.norm(t[-1] - t[0])
+
+    lengths = torch.sqrt(torch.sum((t[1:] - t[:-1]) ** 2, dim=1))  # Length between points
+    path_length = torch.sum(lengths)
+    if torch.isclose(path_distance, torch.as_tensor(0.)):
+        return 0, 0, 0
+    return (path_length / path_distance) - 1, path_length, path_distance
+
 class EnvironmentDatasetRisk(EnvironmentDataset):
     def __init__(self, env, state, pred_state, node_freq_mult, scene_freq_mult, hyperparams, **kwargs):
         self.env = env
@@ -182,7 +197,7 @@ def get_node_timestep_data(env, scene, t, node, state, pred_state,
         map_num = 0
     
     map_num_t = torch.tensor(map_num, dtype=torch.float)
-            
+   
     return (first_history_index, x_t, y_t, x_st_t, y_st_t, neighbors_data_st,
             neighbors_edge_value, robot_traj_st_t, map_tuple,
             x_unf_t, map_num_t)
@@ -190,7 +205,8 @@ def get_node_timestep_data(env, scene, t, node, state, pred_state,
 
 
 def get_timesteps_data(env, scene, t, node_type, state, pred_state,
-                       edge_types, min_ht, max_ht, min_ft, max_ft, hyperparams):
+                       edge_types, min_ht, max_ht, min_ft, max_ft, hyperparams, 
+                       make_tree=False, curv_0_2=None, curv_0_1=None):
     """
     Puts together the inputs for ALL nodes in a given scene and timestep in it.
 
@@ -223,9 +239,17 @@ def get_timesteps_data(env, scene, t, node_type, state, pred_state,
             for node in present_nodes:
                 nodes.append(node)
                 out_timesteps.append(timestep)
-                batch.append(get_node_timestep_data(env, scene, timestep, node, state, pred_state,
+                node_timestep_data = get_node_timestep_data(env, scene, timestep, node, state, pred_state,
                                                     edge_types, max_ht, max_ft, hyperparams,
-                                                    scene_graph=scene_graph))
+                                                    scene_graph=scene_graph)
+                batch.append(node_timestep_data)
+                if make_tree:
+                    if trajectory_curvature(node_timestep_data[1], node_timestep_data[2])[0] > torch.as_tensor(0.2):
+                        curv_0_2[map_names[int(node_timestep_data[-1])]].append(node_timestep_data[-2]) # add x_unf (data[-2]) at map_num_t (data[-1])
+                    elif trajectory_curvature(node_timestep_data[1], node_timestep_data[2])[0] > torch.as_tensor(0.1):
+                        curv_0_1[map_names[int(node_timestep_data[-1])]].append(node_timestep_data[-2]) # add x_unf (data[-2]) at map_num_t (data[-1])
+
+                
     if len(out_timesteps) == 0:
         return None
     return collate(batch), nodes, out_timesteps

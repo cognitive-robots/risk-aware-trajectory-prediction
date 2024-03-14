@@ -7,7 +7,6 @@ from model.dataset.preprocessing import restore
 from mgcvae_risk import MultimodalGenerativeCVAERisk
 from preprocessing_risk import get_timesteps_data
 
-
 class TrajectronRisk(Trajectron):
 
     def set_environment(self, env):
@@ -183,6 +182,40 @@ class TrajectronRisk(Trajectron):
                     predictions_dict[ts] = dict()
                 predictions_dict[ts][nodes[i]] = np.transpose(predictions_np[:, [i]], (1, 0, 2, 3))
 
+        return predictions_dict
+    
+    def make_tree(self,
+                scene,
+                timesteps,
+                ph,
+                curv_0_1,
+                curv_0_2,
+                num_samples=1,
+                min_future_timesteps=0,
+                min_history_timesteps=1,
+                z_mode=False,
+                gmm_mode=False,
+                full_dist=True,
+                all_z_sep=False):
+
+        predictions_dict = {}
+        for node_type in self.env.NodeType:
+            if node_type not in self.pred_state:
+                continue
+            if str(node_type) != 'VEHICLE':
+                continue
+            model = self.node_models_dict[node_type]
+
+            # Get Input data for node type and given timesteps
+            batch = get_timesteps_data(env=self.env, scene=scene, t=timesteps, node_type=node_type, state=self.state,
+                                       pred_state=self.pred_state, edge_types=model.edge_types,
+                                       min_ht=min_history_timesteps, max_ht=self.max_ht, min_ft=min_future_timesteps,
+                                       max_ft=min_future_timesteps, hyperparams=self.hyperparams,
+                                       make_tree=True, curv_0_2=curv_0_2, curv_0_1=curv_0_1)
+            # There are no nodes of type present for timestep
+            if batch is None:
+                continue
+            
         return predictions_dict
 
     def get_vel(self,

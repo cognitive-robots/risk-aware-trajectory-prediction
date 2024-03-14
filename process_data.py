@@ -7,6 +7,7 @@ import argparse
 from tqdm import tqdm
 from pyquaternion import Quaternion
 from sklearn.model_selection import train_test_split
+import pickle
 
 nu_path = './Trajectron-plus-plus/experiments/nuScenes/devkit/python-sdk/'
 sys.path.append(nu_path)
@@ -17,6 +18,34 @@ from nuscenes.map_expansion.map_api import NuScenesMap
 from nuscenes.utils.splits import create_splits_scenes
 from environment import Environment, Scene, Node, GeometricMap, derivative_of
 from kalman_filter import NonlinearKinematicBicycle
+
+FLIP_INSTEAD_OF_ROTATE = False
+
+MAKE_CURVATURE_TREE = False
+
+USE_LOCATION_BASED_CURVATURE = False
+
+if USE_LOCATION_BASED_CURVATURE:
+    with open('curv_0_1_tree.pkl', 'rb') as f:
+        curv_0_1_tree = pickle.load(f)
+    with open('curv_0_2_tree.pkl', 'rb') as f:
+        curv_0_2_tree = pickle.load(f)
+
+
+# first pass - find locations with highest curvature
+if MAKE_CURVATURE_TREE:
+    curv_0_2_locations = {
+        'boston-seaport': [],
+        'singapore-onenorth': [],
+        'singapore-queenstown': [],
+        'singapore-hollandvillage': []
+    }
+    curv_0_1_locations = {
+        'boston-seaport': [],
+        'singapore-onenorth': [],
+        'singapore-queenstown': [],
+        'singapore-hollandvillage': []
+    }
 
 class SceneRisk(Scene):
     def __init__(self, timesteps, map=None, dt=1, name="", frequency_multiplier=1, aug_func=None,  non_aug_scene=None, map_name=None):
@@ -94,6 +123,119 @@ standardization = {
         }
     }
 }
+
+def flip_scene(scene, horizontally=False, vertically=False):
+    #-------------------------ADDED--------------------------
+    data_columns_vehicle = pd.MultiIndex.from_product([['position', 'velocity', 'acceleration', 'heading', 'unfiltered_position'], ['x', 'y']])
+    data_columns_vehicle = data_columns_vehicle.append(pd.MultiIndex.from_tuples([('heading', '°'), ('heading', 'd°')]))
+    data_columns_vehicle = data_columns_vehicle.append(pd.MultiIndex.from_product([['velocity', 'acceleration'], ['norm']]))
+
+    data_columns_pedestrian = pd.MultiIndex.from_product([['position', 'velocity', 'acceleration', 'unfiltered_position'], ['x', 'y']])
+
+    scene_aug = SceneRisk(timesteps=scene.timesteps, map_name=scene.map_name, dt=scene.dt, name=scene.name, non_aug_scene=scene)
+    #--------------------------------------------------------
+    scene_aug.map = dict()
+    if horizontally and not vertically:
+        for key in scene.map:
+            x_transformation = scene.map[key].data.shape[1]
+            scene_aug.map[key] = GeometricMap(
+                                    data=np.flip(scene.map[key].data, axis=1), 
+                                    homography=np.array([[3.,0.,x_transformation],[0.,3.,0.],[0.,0.,3.]]), 
+                                    description=scene.map[key].description)
+    if vertically and not horizontally:
+        for key in scene.map:
+            y_transformation = scene.map[key].data.shape[2]
+            scene_aug.map[key] = GeometricMap(
+                                    data=np.flip(scene.map[key].data, axis=2), 
+                                    homography=np.array([[3.,0.,0.],[0.,3.,y_transformation],[0.,0.,3.]]), 
+                                    description=scene.map[key].description)
+    if horizontally and vertically:
+        for key in scene.map:
+            x_transformation = scene.map[key].data.shape[1]
+            y_transformation = scene.map[key].data.shape[2]
+            scene_aug.map[key] = GeometricMap(
+                                    data=np.flip(np.flip(scene.map[key].data, axis=1), axis=2), 
+                                    homography=np.array([[3.,0.,x_transformation],[0.,3.,y_transformation],[0.,0.,3.]]), 
+                                    description=scene.map[key].description)
+
+
+    for node in scene.nodes:
+        if node.type == 'PEDESTRIAN':
+            x = node.data.position.x.copy()
+            if horizontally:
+                x = -x # FLIP x
+            y = node.data.position.y.copy()
+            if vertically:
+                y = -y # FLIP y
+            x_unf = node.data.unfiltered_position.x.copy()
+            y_unf = node.data.unfiltered_position.y.copy()
+
+            vx = derivative_of(x, scene.dt)
+            vy = derivative_of(y, scene.dt)
+            ax = derivative_of(vx, scene.dt)
+            ay = derivative_of(vy, scene.dt)
+
+            data_dict = {('position', 'x'): x,
+                         ('position', 'y'): y,
+                         #--------------ADDED--------------
+                         ('unfiltered_position', 'x'): x_unf,
+                         ('unfiltered_position', 'y'): y_unf,
+                         #---------------------------------
+                         ('velocity', 'x'): vx,
+                         ('velocity', 'y'): vy,
+                         ('acceleration', 'x'): ax,
+                         ('acceleration', 'y'): ay}
+
+            node_data = pd.DataFrame(data_dict, columns=data_columns_pedestrian)
+
+            node = Node(node_type=node.type, node_id=node.id, data=node_data, first_timestep=node.first_timestep)
+        elif node.type == 'VEHICLE':
+            x = node.data.position.x.copy()
+            if horizontally:
+                x = -x # FLIP x
+            y = node.data.position.y.copy()
+            if vertically:
+                y = -y # FLIP y
+            x_unf = node.data.unfiltered_position.x.copy()
+            y_unf = node.data.unfiltered_position.y.copy()
+
+            heading = getattr(node.data.heading, '°').copy()
+
+            vx = derivative_of(x, scene.dt)
+            vy = derivative_of(y, scene.dt)
+            ax = derivative_of(vx, scene.dt)
+            ay = derivative_of(vy, scene.dt)
+
+            v = np.stack((vx, vy), axis=-1)
+            v_norm = np.linalg.norm(np.stack((vx, vy), axis=-1), axis=-1, keepdims=True)
+            heading_v = np.divide(v, v_norm, out=np.zeros_like(v), where=(v_norm > 1.))
+            heading_x = heading_v[:, 0]
+            heading_y = heading_v[:, 1]
+
+            data_dict = {('position', 'x'): x,
+                         ('position', 'y'): y,
+                        #--------------ADDED--------------
+                         ('unfiltered_position', 'x'): x_unf,
+                         ('unfiltered_position', 'y'): y_unf,
+                        #---------------------------------
+                         ('velocity', 'x'): vx,
+                         ('velocity', 'y'): vy,
+                         ('velocity', 'norm'): np.linalg.norm(np.stack((vx, vy), axis=-1), axis=-1),
+                         ('acceleration', 'x'): ax,
+                         ('acceleration', 'y'): ay,
+                         ('acceleration', 'norm'): np.linalg.norm(np.stack((ax, ay), axis=-1), axis=-1),
+                         ('heading', 'x'): heading_x,
+                         ('heading', 'y'): heading_y,
+                         ('heading', '°'): heading,
+                         ('heading', 'd°'): derivative_of(heading, dt, radian=True)}
+
+            node_data = pd.DataFrame(data_dict, columns=data_columns_vehicle)
+
+            node = Node(node_type=node.type, node_id=node.id, data=node_data, first_timestep=node.first_timestep,
+                        non_aug_node=node)
+
+        scene_aug.nodes.append(node)
+    return scene_aug
 
 
 def augment_scene(scene, angle):
@@ -195,7 +337,10 @@ def augment_scene(scene, angle):
 def augment(scene):
     scene_aug = np.random.choice(scene.augmented)
     scene_aug.temporal_scene_graph = scene.temporal_scene_graph
-    scene_aug.map = scene.map
+    # ------------ FLIP INSTEAD OF ROTATE------------------
+    # scene_aug.map = scene.map
+    if not FLIP_INSTEAD_OF_ROTATE:
+        scene_aug.map = scene.map
     return scene_aug
 
 
@@ -323,6 +468,12 @@ def process_scene(ns_scene, env, nusc, data_path):
     type_map['VISUALIZATION'] = GeometricMap(data=map_mask_plot, homography=homography, description=', '.join(layer_names))
 
     scene.map = type_map
+    # #--------------FLIP BOSTON--------
+    # if map_name == 'boston-seaport':
+    #     for key in scene.map:
+    #         scene.map[key].data = np.flip(scene.map[key].data, axis=1)
+    #         x_transformation = scene.map[key].data.shape[1]
+    #         scene.map[key].homography = np.array([[3.,0.,x_transformation],[0.,3.,0.],[0.,0.,3.]])
     #--------------ADDED--------------
     scene.map_name = map_name
     #---------------------------------
@@ -345,6 +496,9 @@ def process_scene(ns_scene, env, nusc, data_path):
         node_values = node_df[['x', 'y']].values
         x = node_values[:, 0]
         y = node_values[:, 1]
+        # #--------------FLIP BOSTON--------
+        # if map_name == 'boston-seaport':
+        #     x = -x
         #--------------ADDED--------------
         node_unf_values = node_df[['x_unf', 'y_unf']].values
         x_unf = node_unf_values[:, 0]
@@ -399,13 +553,31 @@ def process_scene(ns_scene, env, nusc, data_path):
             global curv_0_2
             global curv_0_1
             total += 1
-            if pl > 1.0:
-                if curvature > .2:
-                    curv_0_2 += 1
-                    node_frequency_multiplier = 3*int(np.floor(total/curv_0_2))
-                elif curvature > .1:
-                    curv_0_1 += 1
-                    node_frequency_multiplier = 3*int(np.floor(total/curv_0_1))
+
+            if USE_LOCATION_BASED_CURVATURE:
+                if pl > 1.0:
+                    points = np.stack((x_unf, y_unf), axis=-1)
+                    radius = 20
+                    num_neighbors_0_2 = curv_0_2_tree[map_name].query_radius(points, radius, count_only=True)
+                    num_neighbors_0_1 = curv_0_1_tree[map_name].query_radius(points, radius, count_only=True)
+                    if np.any(num_neighbors_0_2 > 0):
+                        curv_0_2 += 1
+                        node_frequency_multiplier = 3*int(np.floor(total/curv_0_2))      
+                    elif np.any(num_neighbors_0_1 > 0):
+                        curv_0_1 += 1
+                        node_frequency_multiplier = 3*int(np.floor(total/curv_0_1))                                          
+            else:
+                if pl > 1.0:
+                    if curvature > .2:
+                        curv_0_2 += 1
+                        node_frequency_multiplier = 3*int(np.floor(total/curv_0_2))
+                        # for first pass location curvature
+                        if MAKE_CURVATURE_TREE: curv_0_2_locations[map_name].append((x_unf, y_unf))
+                    elif curvature > .1:
+                        curv_0_1 += 1
+                        node_frequency_multiplier = 3*int(np.floor(total/curv_0_1))
+                        # for first pass location curvature
+                        if MAKE_CURVATURE_TREE: curv_0_1_locations[map_name].append((x_unf, y_unf))
 
         vx = derivative_of(x, scene.dt)
         vy = derivative_of(y, scene.dt)
@@ -507,9 +679,15 @@ def process_data(data_path, version, output_path, val_split):
             if scene is not None:
                 if data_class == 'train':
                     scene.augmented = list()
-                    angles = np.arange(0, 360, 15)
-                    for angle in angles:
-                        scene.augmented.append(augment_scene(scene, angle))
+                    # ----------- FLIP INSTEAD OF ROTATE ----------
+                    if FLIP_INSTEAD_OF_ROTATE:
+                        scene.augmented.append(flip_scene(scene, horizontally=True, vertically=False))
+                        scene.augmented.append(flip_scene(scene, horizontally=False, vertically=True))
+                        scene.augmented.append(flip_scene(scene, horizontally=True, vertically=True))
+                    else:
+                        angles = np.arange(0, 360, 15)
+                        for angle in angles:
+                            scene.augmented.append(augment_scene(scene, angle))
                 scenes.append(scene)
 
         print(f'Processed {len(scenes):.2f} scenes')
@@ -524,6 +702,14 @@ def process_data(data_path, version, output_path, val_split):
             with open(data_dict_path, 'wb') as f:
                 dill.dump(env, f, protocol=dill.HIGHEST_PROTOCOL)
             print('Saved Environment!')
+
+        # for first pass location curvature
+        if MAKE_CURVATURE_TREE:
+            if data_class == 'train':
+                with open('curv_0_1_locations.pkl', 'wb') as f:
+                    pickle.dump(curv_0_1_locations, f)
+                with open('curv_0_2_locations.pkl', 'wb') as f:
+                    pickle.dump(curv_0_2_locations, f)
 
         global total
         global curv_0_2

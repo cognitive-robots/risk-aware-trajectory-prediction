@@ -10,10 +10,13 @@ import pandas as pd
 sys.path.append("./Trajectron-plus-plus/trajectron")
 from tqdm import tqdm
 from model.model_registrar import ModelRegistrar
-from model.trajectron import Trajectron
+# from model.trajectron import Trajectron
+from trajectron_risk import TrajectronRisk
 import evaluation
 import utils
 from scipy.interpolate import RectBivariateSpline
+
+MAKE_CURVATURE_TREE = False
 
 seed = 0
 np.random.seed(seed)
@@ -56,7 +59,7 @@ def load_model(model_dir, env, ts=100):
     with open(os.path.join(model_dir, 'config.json'), 'r') as config_json:
         hyperparams = json.load(config_json)
 
-    trajectron = Trajectron(model_registrar, hyperparams, None, 'cpu')
+    trajectron = TrajectronRisk(model_registrar, hyperparams, None, 'cpu')
 
     trajectron.set_environment(env)
     trajectron.set_annealing_params()
@@ -68,7 +71,19 @@ if __name__ == "__main__":
         env = dill.load(f, encoding='latin1')
 
     eval_stg, hyperparams = load_model(args.model, env, ts=args.checkpoint)
-
+    if MAKE_CURVATURE_TREE:
+        curv_0_2_locations = {
+            'boston-seaport': [],
+            'singapore-onenorth': [],
+            'singapore-queenstown': [],
+            'singapore-hollandvillage': []
+        }
+        curv_0_1_locations = {
+            'boston-seaport': [],
+            'singapore-onenorth': [],
+            'singapore-queenstown': [],
+            'singapore-hollandvillage': []
+        }
     if 'override_attention_radius' in hyperparams:
         for attention_radius_override in hyperparams['override_attention_radius']:
             node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
@@ -95,26 +110,45 @@ if __name__ == "__main__":
             for scene in tqdm(scenes):
                 timesteps = np.arange(scene.timesteps)
 
-                predictions = eval_stg.predict(scene,
-                                               timesteps,
-                                               ph,
-                                               num_samples=1,
-                                               min_future_timesteps=8,
-                                               z_mode=True,
-                                               gmm_mode=True,
-                                               full_dist=False)  # This will trigger grid sampling
+                if MAKE_CURVATURE_TREE:
+                    predictions = eval_stg.make_tree(scene,
+                                                timesteps,
+                                                ph,
+                                                curv_0_1_locations,
+                                                curv_0_2_locations,
+                                                num_samples=1,
+                                                min_future_timesteps=8,
+                                                z_mode=True,
+                                                gmm_mode=True,
+                                                full_dist=False)  # This will trigger grid sampling
+                else:
+                    predictions = eval_stg.predict(scene,
+                                                timesteps,
+                                                ph,
+                                                num_samples=1,
+                                                min_future_timesteps=8,
+                                                z_mode=True,
+                                                gmm_mode=True,
+                                                full_dist=False)  # This will trigger grid sampling
 
-                batch_error_dict = evaluation.compute_batch_statistics(predictions,
-                                                                       scene.dt,
-                                                                       max_hl=max_hl,
-                                                                       ph=ph,
-                                                                       node_type_enum=env.NodeType,
-                                                                       map=None,
-                                                                       prune_ph_to_future=False,
-                                                                       kde=False)
+                    batch_error_dict = evaluation.compute_batch_statistics(predictions,
+                                                                        scene.dt,
+                                                                        max_hl=max_hl,
+                                                                        ph=ph,
+                                                                        node_type_enum=env.NodeType,
+                                                                        map=None,
+                                                                        prune_ph_to_future=False,
+                                                                        kde=False)
 
-                eval_ade_batch_errors = np.hstack((eval_ade_batch_errors, batch_error_dict[args.node_type]['ade']))
-                eval_fde_batch_errors = np.hstack((eval_fde_batch_errors, batch_error_dict[args.node_type]['fde']))
+                    eval_ade_batch_errors = np.hstack((eval_ade_batch_errors, batch_error_dict[args.node_type]['ade']))
+                    eval_fde_batch_errors = np.hstack((eval_fde_batch_errors, batch_error_dict[args.node_type]['fde']))
+
+            if MAKE_CURVATURE_TREE:
+                import pickle
+                with open('hist4s_curv_0_1_locations.pkl', 'wb') as f:
+                    pickle.dump(curv_0_1_locations, f)
+                with open('hist4s_curv_0_2_locations.pkl', 'wb') as f:
+                    pickle.dump(curv_0_2_locations, f)
 
             print(np.mean(eval_fde_batch_errors))
             pd.DataFrame({'value': eval_ade_batch_errors, 'metric': 'ade', 'type': 'ml'}
