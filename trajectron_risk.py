@@ -6,6 +6,7 @@ from model.trajectron import Trajectron
 from model.dataset.preprocessing import restore
 from mgcvae_risk import MultimodalGenerativeCVAERisk
 from preprocessing_risk import get_timesteps_data
+from skimage.util import random_noise
 
 
 class TrajectronRisk(Trajectron):
@@ -50,6 +51,7 @@ class TrajectronRisk(Trajectron):
         if robot_traj_st_t is not None:
             robot_traj_st_t = robot_traj_st_t.to(self.device)
         if type(map) == torch.Tensor:
+            map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise
             map = map.to(self.device)
 
         # Run forward pass
