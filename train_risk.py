@@ -275,7 +275,11 @@ def main():
         for node_type, data_loader in train_data_loader.items():
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
+            # REMOVE_LATER = 0
             for batch in pbar:
+                # if REMOVE_LATER > 0:
+                #     break;
+                # REMOVE_LATER = 1
                 trajectron.set_curr_iter(curr_iter)
                 trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
@@ -398,7 +402,11 @@ def main():
                     eval_loss = []
                     print(f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
                     pbar = tqdm(data_loader, ncols=80)
+                    # REMOVE_LATER = 0
                     for batch in pbar:
+                        # if REMOVE_LATER > 0:
+                        #     break;
+                        # REMOVE_LATER = 1                        
                         eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type)
                         pbar.set_description(f"Epoch {epoch}, {node_type} L: {eval_loss_node_type.item():.2f}")
                         eval_loss.append({node_type: {'nll': [eval_loss_node_type]}})

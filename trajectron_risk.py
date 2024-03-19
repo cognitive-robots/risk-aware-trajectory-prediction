@@ -7,7 +7,7 @@ from model.dataset.preprocessing import restore
 from mgcvae_risk import MultimodalGenerativeCVAERisk
 from preprocessing_risk import get_timesteps_data
 
-NUM_ENSEMBLE = [0] 
+NUM_ENSEMBLE = [0, 1] 
 aggregation_func = torch.mean
 
 class TrajectronRisk(Trajectron):
@@ -152,11 +152,12 @@ class TrajectronRisk(Trajectron):
                 full_dist=True,
                 all_z_sep=False):
 
-        all_models_predictions = []
-        for ens_index in NUM_ENSEMBLE:
-            for node_type in self.env.NodeType:
-                if node_type not in self.pred_state:
-                    continue
+        predictions_dict = {}
+        for node_type in self.env.NodeType:
+            if node_type not in self.pred_state:
+                continue
+            all_models_predictions = []
+            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
 
                 model = self.node_models_dict[ens_index][node_type]
 
@@ -167,6 +168,7 @@ class TrajectronRisk(Trajectron):
                                         max_ft=min_future_timesteps, hyperparams=self.hyperparams)
                 # There are no nodes of type present for timestep
                 if batch is None:
+                    # print('BATCH IS NONE')
                     continue
                 (first_history_index,
                 x_t, y_t, x_st_t, y_st_t,
@@ -202,11 +204,11 @@ class TrajectronRisk(Trajectron):
                                             full_dist=full_dist,
                                             all_z_sep=all_z_sep)
                 all_models_predictions.append(predictions)
-
+            if all_models_predictions == []:
+                continue
             aggregated_ensemble_predictions = aggregation_func(torch.stack(all_models_predictions), dim=0)
             predictions_np = aggregated_ensemble_predictions.cpu().detach().numpy()
 
-            predictions_dict = {}
             # Assign predictions to node
             for i, ts in enumerate(timesteps_o):
                 if ts not in predictions_dict.keys():
