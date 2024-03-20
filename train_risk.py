@@ -23,6 +23,8 @@ from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
 from model.dataset import collate
 from tensorboardX import SummaryWriter
+import wandb
+wandb.login()
 # torch.autograd.set_detect_anomaly(True)
 
 if not torch.cuda.is_available() or args.device == 'cpu':
@@ -264,15 +266,25 @@ def main():
         elif hyperparams['learning_rate_style'] == 'exp':
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
-
+    run = wandb.init(
+        # Set the project where this run will be logged
+        project="train-risk",
+        # Track hyperparameters and run metadata
+        config={
+            "learning_rate": hyperparams['learning_rate'],
+            "epochs": args.train_epochs,
+        })
     #################################
     #           TRAINING            #
     #################################
     curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
     for epoch in range(1, args.train_epochs + 1):
+        wandb.log({"epoch": epoch})
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
         for node_type, data_loader in train_data_loader.items():
+            train_losses = []
+            counts = []
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
             # REMOVE_LATER = 0
@@ -283,9 +295,11 @@ def main():
                 trajectron.set_curr_iter(curr_iter)
                 trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
-                # -------- ADDED HEATMAP_TENSOR -------
+                # -------- ADDED HEATMAP_TENSOR & WANDB -------
                 train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor, 
                     loc_risk=args.location_risk, no_stat=args.no_stationary)
+                train_losses.append(train_loss.item())
+                counts.append(batch[0].shape[0])
                 # -------------------------------------
                 pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
                 train_loss.backward()
@@ -305,6 +319,7 @@ def main():
 
                 curr_iter += 1
             curr_iter_node_type[node_type] = curr_iter
+            wandb.log({"{} full_train_loss".format(node_type): np.average(train_losses, weights=counts)})
         train_dataset.augment = False
         if args.eval_every is not None or args.vis_every is not None:
             eval_trajectron.set_curr_iter(epoch)
@@ -399,6 +414,8 @@ def main():
             with torch.no_grad():
                 # Calculate evaluation loss
                 for node_type, data_loader in eval_data_loader.items():
+                    eval_losses_to_average = []
+                    counts = []
                     eval_loss = []
                     print(f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
                     pbar = tqdm(data_loader, ncols=80)
@@ -408,6 +425,8 @@ def main():
                         #     break;
                         # REMOVE_LATER = 1                        
                         eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type)
+                        eval_losses_to_average.append(eval_loss_node_type)
+                        counts.append(batch[0].shape[0])
                         pbar.set_description(f"Epoch {epoch}, {node_type} L: {eval_loss_node_type.item():.2f}")
                         eval_loss.append({node_type: {'nll': [eval_loss_node_type]}})
                         del batch
@@ -416,6 +435,7 @@ def main():
                                                 log_writer,
                                                 f"{node_type}/eval_loss",
                                                 epoch)
+                    wandb.log({"{} full_eval_loss".format(node_type): np.average(eval_losses_to_average, weights=counts)})
 
                 # Predict batch timesteps for evaluation dataset evaluation
                 eval_batch_errors = []

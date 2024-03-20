@@ -6,8 +6,9 @@ from model.trajectron import Trajectron
 from model.dataset.preprocessing import restore
 from mgcvae_risk import MultimodalGenerativeCVAERisk
 from preprocessing_risk import get_timesteps_data
+import wandb
 
-NUM_ENSEMBLE = [0, 1] 
+NUM_ENSEMBLE = [0, 1, 2, 3] 
 aggregation_func = torch.mean
 
 class TrajectronRisk(Trajectron):
@@ -96,6 +97,7 @@ class TrajectronRisk(Trajectron):
                                     loc_risk=loc_risk,
                                     no_stat=no_stat
                                     )
+            wandb.log({"{} train_loss_{}".format(str(node_type), ens_index): loss.item()})
             losses.append(loss)
         ret = aggregation_func(torch.stack(losses))
         return ret
@@ -136,6 +138,7 @@ class TrajectronRisk(Trajectron):
                                 robot=robot_traj_st_t,
                                 map=map,
                                 prediction_horizon=self.ph)
+            wandb.log({"{} eval_loss_{}".format(str(node_type), ens_index): nll.item()})
             nlls.append(nll)
         ret = aggregation_func(torch.stack(nlls))
         return ret.cpu().detach().numpy()
