@@ -272,6 +272,7 @@ def main():
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
     run = wandb.init(
+        mode="disabled", # for testing
         # Set the project where this run will be logged
         project="train-risk",
         # Track hyperparameters and run metadata
