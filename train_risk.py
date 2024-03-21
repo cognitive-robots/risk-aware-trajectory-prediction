@@ -240,6 +240,7 @@ def main():
                             args.device)
 
     trajectron.set_environment(train_env)
+    trajectron.set_aggregation()
     trajectron.set_annealing_params()
     print('Created Training Model.')
 
@@ -250,6 +251,7 @@ def main():
                                      log_writer,
                                      args.eval_device)
         eval_trajectron.set_environment(eval_env)
+        trajectron.set_aggregation()
         eval_trajectron.set_annealing_params()
     print('Created Evaluation Model.')
 
@@ -267,6 +269,7 @@ def main():
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
     run = wandb.init(
+        mode="disabled", # for testing
         # Set the project where this run will be logged
         project="train-risk",
         # Track hyperparameters and run metadata

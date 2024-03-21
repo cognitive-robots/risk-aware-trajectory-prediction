@@ -9,9 +9,33 @@ from model.components import *
 from model.model_utils import *
 import model.dynamics as dynamic_module
 from environment.scene_graph import DirectedEdge
-
+# from ensemble_params import NUM_ENSEMBLE, activation_func
 
 class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
+
+    # def create_graphical_model(self, edge_types):
+    #     """
+    #     Creates or queries all trainable components.
+
+    #     :param edge_types: List containing strings for all possible edge types for the node type.
+    #     :return: None
+    #     """
+    #     self.clear_submodules()
+
+    #     ############################
+    #     #   Everything but Edges   #
+    #     ############################
+    #     self.create_node_models()
+    #     self.add_submodule(self.node_type + '/ensemble/aggregator',
+    #                        model_if_absent=nn.Linear(x_size, len(NUM_ENSEMBLE)))
+    #     #####################
+    #     #   Edge Encoders   #
+    #     #####################
+    #     if self.hyperparams['edge_encoding']:
+    #         self.create_edge_models(edge_types)
+
+    #     for name, module in self.node_modules.items():
+    #         module.to(self.device)
 
     def train_loss(self,
                    inputs,
@@ -118,6 +142,9 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
                 log_p_y_xz_mean[iter] = log_p_y_xz_mean[iter] 
                 sum_of_weights = sum_of_weights + 1
         # -----------------------
+        return x, log_p_y_xz_mean, kl
+
+    def train_loss_pt2(self, log_p_y_xz_mean, kl):
         log_likelihood = torch.mean(log_p_y_xz_mean)
 
         mutual_inf_q = mutual_inf_mc(self.latent.q_dist)
@@ -147,3 +174,122 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
             if self.hyperparams['log_histograms']:
                 self.latent.summarize_for_tensorboard(self.log_writer, str(self.node_type), self.curr_iter)
         return loss
+
+    def eval_loss(self,
+                  inputs,
+                  inputs_st,
+                  first_history_indices,
+                  labels,
+                  labels_st,
+                  neighbors,
+                  neighbors_edge_value,
+                  robot,
+                  map,
+                  prediction_horizon) -> torch.Tensor:
+        """
+        Calculates the evaluation loss for a batch.
+
+        :param inputs: Input tensor including the state for each agent over time [bs, t, state].
+        :param inputs_st: Standardized input tensor.
+        :param first_history_indices: First timestep (index) in scene for which data is available for a node [bs]
+        :param labels: Label tensor including the label output for each agent over time [bs, t, pred_state].
+        :param labels_st: Standardized label tensor.
+        :param neighbors: Preprocessed dict (indexed by edge type) of list of neighbor states over time.
+                            [[bs, t, neighbor state]]
+        :param neighbors_edge_value: Preprocessed edge values for all neighbor nodes [[N]]
+        :param robot: Standardized robot state over time. [bs, t, robot_state]
+        :param map: Tensor of Map information. [bs, channels, x, y]
+        :param prediction_horizon: Number of prediction timesteps.
+        :return: tuple(nll_q_is, nll_p, nll_exact, nll_sampled)
+        """
+
+        mode = ModeKeys.EVAL
+
+        x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                     inputs=inputs,
+                                                                     inputs_st=inputs_st,
+                                                                     labels=labels,
+                                                                     labels_st=labels_st,
+                                                                     first_history_indices=first_history_indices,
+                                                                     neighbors=neighbors,
+                                                                     neighbors_edge_value=neighbors_edge_value,
+                                                                     robot=robot,
+                                                                     map=map)
+
+        num_components = self.hyperparams['N'] * self.hyperparams['K']
+        ### Importance sampled NLL estimate
+        z, _ = self.encoder(mode, x, y_e)  # [k_eval, nbs, N*K]
+        z = self.latent.sample_p(1, mode, full_dist=True)
+        y_dist, _ = self.p_y_xz(ModeKeys.PREDICT, x, x_nr_t, y_r, n_s_t0, z,
+                                prediction_horizon, num_samples=1, num_components=num_components)
+        # We use unstandardized labels to compute the loss
+        log_p_yt_xz = torch.clamp(y_dist.log_prob(labels), max=self.hyperparams['log_p_yt_xz_max'])
+        log_p_y_xz = torch.sum(log_p_yt_xz, dim=2)
+        log_p_y_xz_mean = torch.mean(log_p_y_xz, dim=0)  # [nbs]
+        return x, log_p_y_xz_mean
+
+    def eval_loss_pt2(self, log_p_y_xz_mean):
+        log_likelihood = torch.mean(log_p_y_xz_mean)
+        nll = -log_likelihood
+        return nll
+
+    def predict(self,
+                inputs,
+                inputs_st,
+                first_history_indices,
+                neighbors,
+                neighbors_edge_value,
+                robot,
+                map,
+                prediction_horizon,
+                num_samples,
+                z_mode=False,
+                gmm_mode=False,
+                full_dist=True,
+                all_z_sep=False):
+        """
+        Predicts the future of a batch of nodes.
+
+        :param inputs: Input tensor including the state for each agent over time [bs, t, state].
+        :param inputs_st: Standardized input tensor.
+        :param first_history_indices: First timestep (index) in scene for which data is available for a node [bs]
+        :param neighbors: Preprocessed dict (indexed by edge type) of list of neighbor states over time.
+                            [[bs, t, neighbor state]]
+        :param neighbors_edge_value: Preprocessed edge values for all neighbor nodes [[N]]
+        :param robot: Standardized robot state over time. [bs, t, robot_state]
+        :param map: Tensor of Map information. [bs, channels, x, y]
+        :param prediction_horizon: Number of prediction timesteps.
+        :param num_samples: Number of samples from the latent space.
+        :param z_mode: If True: Select the most likely latent state.
+        :param gmm_mode: If True: The mode of the GMM is sampled.
+        :param all_z_sep: Samples each latent mode individually without merging them into a GMM.
+        :param full_dist: Samples all latent states and merges them into a GMM as output.
+        :return:
+        """
+        mode = ModeKeys.PREDICT
+
+        x, x_nr_t, _, y_r, _, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                   inputs=inputs,
+                                                                   inputs_st=inputs_st,
+                                                                   labels=None,
+                                                                   labels_st=None,
+                                                                   first_history_indices=first_history_indices,
+                                                                   neighbors=neighbors,
+                                                                   neighbors_edge_value=neighbors_edge_value,
+                                                                   robot=robot,
+                                                                   map=map)
+
+        self.latent.p_dist = self.p_z_x(mode, x)
+        z, num_samples, num_components = self.latent.sample_p(num_samples,
+                                                              mode,
+                                                              most_likely_z=z_mode,
+                                                              full_dist=full_dist,
+                                                              all_z_sep=all_z_sep)
+
+        _, our_sampled_future = self.p_y_xz(mode, x, x_nr_t, y_r, n_s_t0, z,
+                                            prediction_horizon,
+                                            num_samples,
+                                            num_components,
+                                            gmm_mode)
+
+        return x, our_sampled_future
