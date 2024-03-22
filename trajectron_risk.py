@@ -44,7 +44,7 @@ class TrajectronRisk(Trajectron):
         if self.num_models == 1:
             return losses[0]
         model_input = torch.cat(tuple(encoded_inputs), 1).to(self.device)
-        model_output = self.agg_models[node_type](model_input)
+        model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans
 
         if predict:
             predictions = losses # just indicating that if predict is true, the losses are actually predictions
