@@ -4,13 +4,21 @@ import sys
 sys.path.append("Trajectron-plus-plus/trajectron/")
 from model.trajectron import Trajectron 
 from model.dataset.preprocessing import restore
-from mgcvae_risk import MultimodalGenerativeCVAERisk
+from mgcvae_risk import MultimodalGenerativeCVAERisk, train_loss_pt2, eval_loss_pt2
 from preprocessing_risk import get_timesteps_data
 import torch.nn as nn
 import wandb
 
 NUM_ENSEMBLE = [0, 1]
-aggregation_type = 'stack' # out of ['bag', 'stack', 'boost'], where bag is averaging, stack is aggregation classifier
+
+def create_stacking_model(env, x_size):
+    num_models = len(NUM_ENSEMBLE)
+    models = {}
+    for node_type in env.NodeType:
+        models[node_type] = nn.Sequential(
+                                nn.Linear(x_size[node_type]*num_models, num_models).cuda(),
+                                nn.ReLU())
+    return models
 
 class TrajectronRisk(Trajectron):
 
@@ -37,6 +45,9 @@ class TrajectronRisk(Trajectron):
                         x_size[node_type] = self.node_models_dict[ens_index][node_type].x_size
         self.x_size = x_size
 
+    def get_x_size(self):
+        return self.x_size
+
     def bagging(self, losses, encoded_inputs=None, node_type=None, predict=False): # losses is either losses or predictions
         return torch.mean(torch.stack(losses), dim=0)
 
@@ -48,9 +59,10 @@ class TrajectronRisk(Trajectron):
 
         if predict:
             predictions = losses # just indicating that if predict is true, the losses are actually predictions
-            sum_preds = torch.zeros(predictions[0].shape)
+            sum_preds = torch.zeros(predictions[0].shape).to(self.device)
             for i in range(self.num_models):
-                sum_preds += predictions[i]*model_output[i]
+                for j in range(model_output.shape[0]): # per example in batch
+                    sum_preds[:,j,:,:] += predictions[i][:,j,:,:]*model_output[j,i]
             return sum_preds / model_output.sum() # return normalized weighted average of predictions
             # ind = torch.argmax(model_output) # return predictions of most probably correct model
             # return predictions[ind]
@@ -61,22 +73,17 @@ class TrajectronRisk(Trajectron):
         normalized_weighted_average = torch.sum(weighted_losses, 1) / torch.sum(model_output, 1)
         return normalized_weighted_average        
     
-    def set_aggregation(self):
+    def set_aggregation(self, ensemble_method, agg_models=None):
         num_models = len(NUM_ENSEMBLE)
-
-        if aggregation_type == 'bag':
-            self.aggregation_func = self.bagging
-
-        if aggregation_type == 'stack':
-            models = {}
-            for node_type in self.env.NodeType:
-                models[node_type] = nn.Sequential(
-                                        nn.Linear(self.x_size[node_type]*num_models, num_models).cuda(),
-                                        nn.ReLU())
-            self.agg_models = models
-            self.aggregation_func = self.stacking
+        self.ensemble_method = ensemble_method
         self.num_models = num_models
 
+        if ensemble_method == 'bag':
+            self.aggregation_func = self.bagging
+
+        if ensemble_method == 'stack':
+            self.agg_models = agg_models
+            self.aggregation_func = self.stacking
 
     def set_curr_iter(self, curr_iter):
         self.curr_iter = curr_iter
@@ -97,7 +104,7 @@ class TrajectronRisk(Trajectron):
             else:
                 self.node_models_dict[ens_index][node_type].step_annealers()
 
-    def train_loss(self, batch, node_type, heatmap_tensor, grid_tensor, loc_risk=False, no_stat=False):
+    def train_loss(self, batch, node_type, heatmap_tensor, grid_tensor):
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
@@ -121,37 +128,62 @@ class TrajectronRisk(Trajectron):
             robot_traj_st_t = robot_traj_st_t.to(self.device)
         if type(map) == torch.Tensor:
             map = map.to(self.device)
+        
+        if self.ensemble_method == 'bag':
+            losses = []
+            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+                # Run forward pass
+                model = self.node_models_dict[ens_index][node_type]
+                loss = model.train_loss(inputs=x,
+                                        inputs_st=x_st_t,
+                                        first_history_indices=first_history_index,
+                                        labels=y,
+                                        labels_st=y_st_t,
+                                        neighbors=restore(neighbors_data_st),
+                                        neighbors_edge_value=restore(neighbors_edge_value),
+                                        robot=robot_traj_st_t,
+                                        map=map,
+                                        prediction_horizon=self.ph,
+                                        heatmap_tensor=heatmap_tensor,
+                                        x_unf=x_unf,
+                                        map_name=map_name,
+                                        grid_tensor=grid_tensor)
+                losses.append(loss)
+            ret = self.aggregation_func(losses)
+            return ret
 
-        losses = []
-        encoded_inputs = []
-        kls = []
-        for ens_index in NUM_ENSEMBLE: # for each model in ensemble
-            # Run forward pass
-            model = self.node_models_dict[ens_index][node_type]
-            encoded_input, per_example_loss, kl = model.train_loss(inputs=x,
-                                    inputs_st=x_st_t,
-                                    first_history_indices=first_history_index,
-                                    labels=y,
-                                    labels_st=y_st_t,
-                                    neighbors=restore(neighbors_data_st),
-                                    neighbors_edge_value=restore(neighbors_edge_value),
-                                    robot=robot_traj_st_t,
-                                    map=map,
-                                    prediction_horizon=self.ph,
-                                    heatmap_tensor=heatmap_tensor,
-                                    x_unf=x_unf,
-                                    map_name=map_name,
-                                    grid_tensor=grid_tensor,
-                                    loc_risk=loc_risk,
-                                    no_stat=no_stat
-                                    )
-            wandb.log({"{} train_loss_{}".format(str(node_type), ens_index): model.train_loss_pt2(per_example_loss, kl).item()})
-            losses.append(per_example_loss)
-            encoded_inputs.append(encoded_input)
-            kls.append(kl)
-        aggregated = self.aggregation_func(losses, encoded_inputs, node_type)
-        aggregated_kl = torch.mean(torch.stack(kls)) # mean aggregated kl - could make it weighted maybe keep learned weighting just for inputs
-        return model.train_loss_pt2(aggregated, aggregated_kl)
+        if self.ensemble_method == 'stack':
+            losses = []
+            encoded_inputs = []
+            kls = []
+            infs = []
+            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+                # Run forward pass
+                model = self.node_models_dict[ens_index][node_type]
+                encoded_input, per_example_loss, kl_term, inf_term = model.train_loss_pt1(inputs=x,
+                                        inputs_st=x_st_t,
+                                        first_history_indices=first_history_index,
+                                        labels=y,
+                                        labels_st=y_st_t,
+                                        neighbors=restore(neighbors_data_st),
+                                        neighbors_edge_value=restore(neighbors_edge_value),
+                                        robot=robot_traj_st_t,
+                                        map=map,
+                                        prediction_horizon=self.ph,
+                                        heatmap_tensor=heatmap_tensor,
+                                        x_unf=x_unf,
+                                        map_name=map_name,
+                                        grid_tensor=grid_tensor)
+                wandb.log({"{} train_loss_{}".format(str(node_type), 
+                                ens_index): train_loss_pt2(per_example_loss, kl_term, inf_term).item()})
+                losses.append(per_example_loss)
+                encoded_inputs.append(encoded_input)
+                kls.append(kl_term)
+                infs.append(inf_term)
+            aggregated = self.aggregation_func(losses, encoded_inputs, node_type)
+            aggregated_kl = torch.mean(torch.stack(kls)) # mean aggregated kl and inf - 
+            aggregated_inf = torch.mean(torch.stack(infs)) # could make it weighted maybe keep learned weighting just for inputs
+            return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf)
 
     def eval_loss(self, batch, node_type):
         (first_history_index,
@@ -175,26 +207,46 @@ class TrajectronRisk(Trajectron):
         if type(map) == torch.Tensor:
             map = map.to(self.device)
 
-        nlls = []
-        encoded_inputs = []
-        for ens_index in NUM_ENSEMBLE: # for each model in ensemble
-            # Run forward pass
-            model = self.node_models_dict[ens_index][node_type]
-            encoded_input, nll = model.eval_loss(inputs=x,
-                                inputs_st=x_st_t,
-                                first_history_indices=first_history_index,
-                                labels=y,
-                                labels_st=y_st_t,
-                                neighbors=restore(neighbors_data_st),
-                                neighbors_edge_value=restore(neighbors_edge_value),
-                                robot=robot_traj_st_t,
-                                map=map,
-                                prediction_horizon=self.ph)
-            wandb.log({"{} eval_loss_{}".format(str(node_type), ens_index): model.eval_loss_pt2(nll).item()})
-            nlls.append(nll)
-            encoded_inputs.append(encoded_input)
-        aggregated = self.aggregation_func(nlls, encoded_inputs, node_type)
-        return eval_loss_pt2(aggregated).cpu().detach().numpy()
+        if self.ensemble_method == 'bag':
+            nlls = []
+            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+                # Run forward pass
+                model = self.node_models_dict[ens_index][node_type]
+                nll = model.eval_loss(inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph)
+                nlls.append(nll)
+            ret = self.aggregation_func(nlls)
+            return ret.cpu().detach().numpy()
+
+        if self.ensemble_method == 'stack':
+            nlls = []
+            encoded_inputs = []
+            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+                # Run forward pass
+                model = self.node_models_dict[ens_index][node_type]
+                encoded_input, nll = model.eval_loss_pt1(inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph)
+                wandb.log({"{} eval_loss_{}".format(str(node_type), ens_index): eval_loss_pt2(nll).item()})
+                nlls.append(nll)
+                encoded_inputs.append(encoded_input)
+            aggregated = self.aggregation_func(nlls, encoded_inputs, node_type)
+            return eval_loss_pt2(aggregated).cpu().detach().numpy()
 
     def predict(self,
                 scene,

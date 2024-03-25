@@ -12,7 +12,7 @@ import warnings
 import argparse
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from trajectron_risk import TrajectronRisk
+from trajectron_risk import TrajectronRisk, create_stacking_model
 from preprocessing_risk import EnvironmentDatasetRisk
 from arg_parser_risk import args 
 sys.path.append("./Trajectron-plus-plus/")
@@ -26,6 +26,7 @@ from tensorboardX import SummaryWriter
 import wandb
 wandb.login()
 # torch.autograd.set_detect_anomaly(True)
+args.vis_every = None # not using it atm
 
 if not torch.cuda.is_available() or args.device == 'cpu':
     args.device = torch.device('cpu')
@@ -37,6 +38,10 @@ else:
         args.device = 'cuda:0'
 
     args.device = torch.device(args.device)
+
+# TODO FIX LATER - make stacking model able to be on both devices
+if args.ensemble_method == 'stack':
+    args.eval_device = args.device
 
 if args.eval_device is None:
     args.eval_device = torch.device('cpu')
@@ -101,8 +106,7 @@ def main():
     # #---- ADDED ----
     print('| Heatmap Data: %s' % hyperparams['heatmap_data'])
     print('| Grid Data: %s' % hyperparams['grid_data'])
-    print('| No-Stationary: %s' % args.no_stationary)
-    print('| Location-Risk: %s' % args.location_risk)
+    print('| Ensemble Method: %s' % args.ensemble_method)
     # #---------------
     print('-----------------------')
 
@@ -233,14 +237,20 @@ def main():
             print(f"Created Scene Graph for Evaluation Scene {i}")
 
     model_registrar = ModelRegistrar(model_dir, args.device)
-
+    
     trajectron = TrajectronRisk(model_registrar,
                             hyperparams,
                             log_writer,
                             args.device)
 
     trajectron.set_environment(train_env)
-    trajectron.set_aggregation()
+
+    # create aggregation model for stacking
+    aggregation_model = None
+    if args.ensemble_method == 'stack':
+        aggregation_model = create_stacking_model(train_env, trajectron.get_x_size())
+
+    trajectron.set_aggregation(args.ensemble_method, agg_models=aggregation_model)
     trajectron.set_annealing_params()
     print('Created Training Model.')
 
@@ -251,7 +261,7 @@ def main():
                                      log_writer,
                                      args.eval_device)
         eval_trajectron.set_environment(eval_env)
-        trajectron.set_aggregation()
+        eval_trajectron.set_aggregation(args.ensemble_method, agg_models=aggregation_model)
         eval_trajectron.set_annealing_params()
     print('Created Evaluation Model.')
 
@@ -299,8 +309,7 @@ def main():
                 trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
                 # -------- ADDED HEATMAP_TENSOR & WANDB -------
-                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor, 
-                    loc_risk=args.location_risk, no_stat=args.no_stationary)
+                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor)
                 train_losses.append(train_loss.item())
                 counts.append(batch[0].shape[0])
                 # -------------------------------------
