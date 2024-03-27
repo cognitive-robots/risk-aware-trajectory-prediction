@@ -171,7 +171,7 @@ parser.add_argument('--save_every',
                     default=1)
 
 parser.add_argument("--ensemble_method",
-                    help="must be either 'bag' or 'stack'",
+                    help="must be either 'bag' 'stack' or 'boost'",
                     type=str,
                     required=True)
 args = parser.parse_args()
