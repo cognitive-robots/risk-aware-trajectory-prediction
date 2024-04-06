@@ -10,6 +10,8 @@ import torch.nn as nn
 import wandb
 
 NUM_ENSEMBLE = [0, 1]
+STACKING_CHOOSE_ONE = True
+stacking_model_eta = 1
 
 def create_stacking_model(env, x_size):
     num_models = len(NUM_ENSEMBLE)
@@ -63,6 +65,18 @@ class TrajectronRisk(Trajectron):
         model_input = torch.cat(tuple(encoded_inputs), 1).to(self.device)
         model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans
 
+        if STACKING_CHOOSE_ONE:
+            losses_stacked = torch.stack(losses)
+            if not predict: # compute loss for stacking model
+                losses_transposed = torch.transpose(losses_stacked, 0, 1)
+                loss = nn.CrossEntropyLoss()
+                input = model_output.softmax(dim=1)
+                target = torch.argmax(losses_transposed, dim=1) # this is max because it's log_likelihood, not nll yet
+                self.stacking_model_loss = loss(input, target) * stacking_model_eta
+
+            inds = torch.argmax(model_output, dim=1) # return predictions of most probably correct model
+            return losses_stacked[inds][0]
+        
         if predict:
             predictions = losses # just indicating that if predict is true, the losses are actually predictions
             sum_preds = torch.zeros(predictions[0].shape).to(self.device)
@@ -70,8 +84,6 @@ class TrajectronRisk(Trajectron):
                 for j in range(model_output.shape[0]): # per example in batch
                     sum_preds[:,j,:,:] += predictions[i][:,j,:,:]*model_output[j,i]
             return sum_preds / model_output.sum() # return normalized weighted average of predictions
-            # ind = torch.argmax(model_output) # return predictions of most probably correct model
-            # return predictions[ind]
 
         # do a weighted average of losses, weighted by model_output
         losses_stacked = torch.stack(losses, dim=1)
@@ -189,6 +201,8 @@ class TrajectronRisk(Trajectron):
             aggregated = self.aggregation_func(losses, encoded_inputs, node_type)
             aggregated_kl = torch.mean(torch.stack(kls)) # mean aggregated kl and inf - 
             aggregated_inf = torch.mean(torch.stack(infs)) # could make it weighted maybe keep learned weighting just for inputs
+            if STACKING_CHOOSE_ONE:
+                return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf) + self.stacking_model_loss
             return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf)
 
     def eval_loss(self, batch, node_type):
