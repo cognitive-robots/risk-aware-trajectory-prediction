@@ -23,7 +23,9 @@ def create_stacking_model(env, x_size):
         hidden_layer_size2 = int(2/3 * hidden_layer_size1 + output_layer_size)
         models[node_type] = nn.Sequential(
                                 nn.Linear(input_layer_size, hidden_layer_size1).cuda(),
+                                nn.ReLU(),
                                 nn.Linear(hidden_layer_size1, hidden_layer_size2).cuda(),
+                                nn.ReLU(),
                                 nn.Linear(hidden_layer_size2, output_layer_size).cuda(),
                                 nn.ReLU())
     return models
