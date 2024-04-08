@@ -339,6 +339,7 @@ def main():
         #################################
         #        VISUALIZATION          #
         #################################
+        args.vis_every = None
         if args.vis_every is not None and not args.debug and epoch % args.vis_every == 0 and epoch > 0:
             max_hl = hyperparams['maximum_history_length']
             ph = hyperparams['prediction_horizon']

@@ -19,14 +19,21 @@ def create_stacking_model(env, x_size):
     for node_type in env.NodeType:
         input_layer_size = x_size[node_type]*num_models
         output_layer_size = num_models
-        hidden_layer_size1 = int(2/3 * input_layer_size + output_layer_size)
-        hidden_layer_size2 = int(2/3 * hidden_layer_size1 + output_layer_size)
+        hidden_layer_size =  int((input_layer_size + output_layer_size) / 2)
+        # hidden_layer_size1 = int(2/3 * input_layer_size + output_layer_size)
+        # hidden_layer_size2 = int(2/3 * hidden_layer_size1 + output_layer_size)
+        # hidden_layer_size3 = int(2/3 * hidden_layer_size2 + output_layer_size)
+        # hidden_layer_size4 = int(2/3 * hidden_layer_size3 + output_layer_size)
         models[node_type] = nn.Sequential(
-                                nn.Linear(input_layer_size, hidden_layer_size1).cuda(),
+                                nn.Linear(input_layer_size, hidden_layer_size).cuda(),
                                 nn.ReLU(),
-                                nn.Linear(hidden_layer_size1, hidden_layer_size2).cuda(),
+                                nn.Linear(hidden_layer_size, hidden_layer_size).cuda(),
                                 nn.ReLU(),
-                                nn.Linear(hidden_layer_size2, output_layer_size).cuda(),
+                                nn.Linear(hidden_layer_size, output_layer_size).cuda(),
+                                # nn.ReLU(),
+                                # nn.Linear(hidden_layer_size, hidden_layer_size).cuda(),
+                                # nn.ReLU(),
+                                # nn.Linear(hidden_layer_size, output_layer_size).cuda(),
                                 nn.ReLU())
     return models
 
