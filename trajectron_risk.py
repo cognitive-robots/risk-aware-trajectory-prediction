@@ -9,8 +9,8 @@ from preprocessing_risk import get_timesteps_data
 import torch.nn as nn
 import wandb
 
-NUM_ENSEMBLE = [0, 1]
-stacking_model_eta = 1 # for stack or stackboost
+NUM_ENSEMBLE = [0, 1, 2]
+stacking_model_eta = 0.1 # for stack or stackboost
 STACKING_CHOOSE_ONE = False # for stack only
 STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 
@@ -37,6 +37,14 @@ def create_stacking_model(env, x_size):
                                 # nn.Linear(hidden_layer_size, output_layer_size).cuda(),
                                 nn.ReLU())
     return models
+
+def mask_neighbors(neighbors, cond): #cond is an if condition like (mask == ens_index)
+    neighbors_masked = {}
+    neighbor_inds = torch.where(cond)[0].tolist()
+    restored_neighbors = restore(neighbors)
+    for key in restored_neighbors.keys():
+        neighbors_masked[key] = [restored_neighbors[key][i] for i in neighbor_inds]
+    return neighbors_masked
 
 class TrajectronRisk(Trajectron):
 
@@ -105,20 +113,18 @@ class TrajectronRisk(Trajectron):
         model_input = torch.cat(tuple(encoded_inputs), 1).to(self.device)
         model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
         model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
+        model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
         if predict:
             predictions = target # just indicating that if predict is true, the target is actually predictions
             if self.num_models == 1:
                 return predictions[0]
-            model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
             agg_preds = torch.zeros(predictions[0].shape).to(self.device)
             for i in range(model_output.shape[0]): # per example in batch
-                agg_preds[i] = predictions[model_inference[i]][i] # ith example gets predictions from chosen ens at i
-            import pdb; pdb.set_trace() # check that agg_preds is the right shape and contains the right models info
+                agg_preds[:,i,:,:] = predictions[model_inference[i]][:,i,:,:] # ith example gets predictions from chosen ens at i
             return agg_preds
-
         loss = nn.CrossEntropyLoss()
-        self.stacking_model_loss = loss(softmax, target) * stacking_model_eta
-        return self.stacking_model_loss
+        self.stacking_model_loss = loss(model_output, target.to(self.device)) * stacking_model_eta
+        return model_inference
 
     def set_aggregation(self, ensemble_method, agg_models=None):
         num_models = len(NUM_ENSEMBLE)
@@ -155,7 +161,7 @@ class TrajectronRisk(Trajectron):
             else:
                 self.node_models_dict[ens_index][node_type].step_annealers()
 
-    def train_loss(self, batch, node_type, heatmap_tensor, grid_tensor):
+    def train_loss(self, batch, node_type, heatmap_tensor, grid_tensor, epoch):
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
@@ -235,7 +241,7 @@ class TrajectronRisk(Trajectron):
             aggregated_kl = torch.mean(torch.stack(kls)) # mean aggregated kl and inf - 
             aggregated_inf = torch.mean(torch.stack(infs)) # could make it weighted maybe keep learned weighting just for inputs
             if STACKING_CHOOSE_ONE:
-                return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf) + self.stacking_model_loss
+                return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf) + self.stacking_model_loss * epoch # incr stack loss every epoch
             return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf)
 
         if self.ensemble_method == 'stackboost':
@@ -249,33 +255,33 @@ class TrajectronRisk(Trajectron):
                 # Run forward pass
                 model = self.node_models_dict[ens_index][node_type]
                 encoded_input, per_example_likelihood, kl_term, inf_term = model.train_loss_pt1(
-                                        inputs=x[mask == ens_index],
-                                        inputs_st=x_st_t[mask == ens_index],
-                                        first_history_indices=first_history_index[mask == ens_index],
-                                        labels=y[mask == ens_index],
-                                        labels_st=y_st_t[mask == ens_index],
+                                        inputs=x,
+                                        inputs_st=x_st_t,
+                                        first_history_indices=first_history_index,
+                                        labels=y,
+                                        labels_st=y_st_t,
                                         neighbors=restore(neighbors_data_st),
                                         neighbors_edge_value=restore(neighbors_edge_value),
                                         robot=robot_traj_st_t,
-                                        map=map[mask == ens_index],
+                                        map=map,
                                         prediction_horizon=self.ph,
                                         heatmap_tensor=heatmap_tensor,
-                                        x_unf=x_unf[mask == ens_index],
-                                        map_name=map_name[mask == ens_index],
+                                        x_unf=x_unf,
+                                        map_name=map_name,
                                         grid_tensor=grid_tensor)
                 encoded_inputs.append(encoded_input)
+                per_example_likelihood[mask != ens_index] = float('inf') # ignore examples belonging to prev models (since we're getting min k)
                 ind_k = int(STACKBOOST_PERCENTAGE*ind_k)
-                inds = torch.topk(per_example_likelihood, ind_k, largest=False, sorted=True) # get bottom k (worst=> smallest likelihood)
-                if ens_index != last_model_index: # no more models, leave leftovers to last model
-                    mask[torch.where(mask == ens_index)[0][inds.indices]] += 1 # leave the ones it got wrong to the next model
+                inds = torch.topk(per_example_likelihood, ind_k, largest=False, sorted=True) # get min k (worst=> smallest likelihood)
+                if ens_index != last_model_index: # if no more models, leave leftovers to last model
+                    mask[inds.indices] += 1 # leave the ones it got wrong to the next model
                 this_models_losses = per_example_likelihood[mask == ens_index]
                 loss = train_loss_pt2(this_models_losses, kl_term, inf_term)
                 wandb.log({"{} train_loss_{}".format(str(node_type), ens_index): loss.item()})
                 losses.append(loss)
-            import pdb; pdb.set_trace() # make sure 50% are 0, 25% are 1, 25% are 2
-            aggregated = self.aggregation_func(mask, encoded_inputs, node_type)
-            import pdb; pdb.set_trace() # make sure aggregated and self.stacking_model_loss are the same
-            return torch.mean(torch.stack(losses)) + self.stacking_model_loss
+
+            _ = self.aggregation_func(mask, encoded_inputs, node_type) 
+            return torch.mean(torch.stack(losses)) + self.stacking_model_loss * epoch # incr stack loss weight every epoch
 
 
     def eval_loss(self, batch, node_type):
@@ -351,29 +357,24 @@ class TrajectronRisk(Trajectron):
             for ens_index in NUM_ENSEMBLE: # for each model in ensemble
                 # Run forward pass
                 model = self.node_models_dict[ens_index][node_type]
-                encoded_input, per_example_likelihood = model.eval_loss_pt1(
-                                    inputs=x[mask == ens_index],
-                                    inputs_st=x_st_t[mask == ens_index],
-                                    first_history_indices=first_history_index[mask == ens_index],
-                                    labels=y[mask == ens_index],
-                                    labels_st=y_st_t[mask == ens_index],
+                encoded_input, nll = model.eval_loss_pt1(
+                                    inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
                                     neighbors=restore(neighbors_data_st),
                                     neighbors_edge_value=restore(neighbors_edge_value),
                                     robot=robot_traj_st_t,
-                                    map=map[mask == ens_index],
+                                    map=map,
                                     prediction_horizon=self.ph)
                 encoded_inputs.append(encoded_input)
-                ind_k = int(STACKBOOST_PERCENTAGE*ind_k)
-                inds = torch.topk(per_example_likelihood, ind_k, largest=False, sorted=True) # get bottom k (worst=> smallest likelihood)
-                if ens_index != last_model_index: # no more models, leave leftovers to last model
-                    mask[torch.where(mask == ens_index)[0][inds.indices]] += 1 # leave the ones it got wrong to the next model
-                this_models_losses = per_example_likelihood[mask == ens_index]
-                nll = eval_loss_pt2(this_models_losses)
-                wandb.log({"{} eval_loss_{}".format(str(node_type), ens_index): nll.item()})
                 nlls.append(nll)
+                wandb.log({"{} eval_loss_{}".format(str(node_type), ens_index): eval_loss_pt2(nll).item()})
 
-            aggregated = self.aggregation_func(mask, encoded_inputs, node_type)
-            ret = torch.mean(torch.stack(nlls)) + self.stacking_model_loss
+            ens_model = self.aggregation_func(mask, encoded_inputs, node_type)
+            agg_preds = [nlls[ens_model[i]][i] for i in range(ens_model.shape[0])]
+            ret = eval_loss_pt2(torch.tensor(agg_preds))
             return ret.cpu().detach().numpy()
 
     def predict(self,

@@ -279,7 +279,7 @@ def main():
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
     run = wandb.init(
-        mode="disabled", # for testing
+        # mode="disabled", # for testing
         # Set the project where this run will be logged
         project="train-risk",
         # Track hyperparameters and run metadata
@@ -300,16 +300,16 @@ def main():
             counts = []
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
-            REMOVE_LATER = 0
+            # REMOVE_LATER = 0
             for batch in pbar:
-                if REMOVE_LATER > 0:
-                    break;
-                REMOVE_LATER = 1
+                # if REMOVE_LATER > 0:
+                #     break;
+                # REMOVE_LATER = 1
                 trajectron.set_curr_iter(curr_iter)
                 trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
                 # -------- ADDED HEATMAP_TENSOR & WANDB -------
-                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor)
+                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor, epoch)
                 train_losses.append(train_loss.item())
                 counts.append(batch[0].shape[0])
                 # -------------------------------------
@@ -432,11 +432,11 @@ def main():
                     eval_loss = []
                     print(f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
                     pbar = tqdm(data_loader, ncols=80)
-                    REMOVE_LATER = 0
+                    # REMOVE_LATER = 0
                     for batch in pbar:
-                        if REMOVE_LATER > 0:
-                            break;
-                        REMOVE_LATER = 1                        
+                        # if REMOVE_LATER > 0:
+                        #     break;
+                        # REMOVE_LATER = 1                        
                         eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type)
                         eval_losses_to_average.append(eval_loss_node_type)
                         counts.append(batch[0].shape[0])
