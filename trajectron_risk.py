@@ -10,9 +10,10 @@ import torch.nn as nn
 import wandb
 
 NUM_ENSEMBLE = [0, 1, 2]
-stacking_model_eta = 0.1 # for stack or stackboost
 STACKING_CHOOSE_ONE = False # for stack only
 STACKBOOST_PERCENTAGE = 0.5 # for stackboost
+stacking_model_eta = 0.1 # for stack or stackboost
+INCR_ETA = False
 
 def create_stacking_model(env, x_size):
     num_models = len(NUM_ENSEMBLE)
@@ -20,17 +21,17 @@ def create_stacking_model(env, x_size):
     for node_type in env.NodeType:
         input_layer_size = x_size[node_type]*num_models
         output_layer_size = num_models
-        hidden_layer_size =  int((input_layer_size + output_layer_size) / 2)
-        # hidden_layer_size1 = int(2/3 * input_layer_size + output_layer_size)
+        # hidden_layer_size =  int((input_layer_size + output_layer_size) / 2)
+        hidden_layer_size1 = int(2/3 * input_layer_size + output_layer_size)
         # hidden_layer_size2 = int(2/3 * hidden_layer_size1 + output_layer_size)
         # hidden_layer_size3 = int(2/3 * hidden_layer_size2 + output_layer_size)
         # hidden_layer_size4 = int(2/3 * hidden_layer_size3 + output_layer_size)
         models[node_type] = nn.Sequential(
-                                nn.Linear(input_layer_size, hidden_layer_size).cuda(),
+                                nn.Linear(input_layer_size, hidden_layer_size1).cuda(),
                                 nn.ReLU(),
-                                nn.Linear(hidden_layer_size, hidden_layer_size).cuda(),
-                                nn.ReLU(),
-                                nn.Linear(hidden_layer_size, output_layer_size).cuda(),
+                                nn.Linear(hidden_layer_size1, output_layer_size).cuda(),
+                                # nn.ReLU(),
+                                # nn.Linear(hidden_layer_size, output_layer_size).cuda(),
                                 # nn.ReLU(),
                                 # nn.Linear(hidden_layer_size, hidden_layer_size).cuda(),
                                 # nn.ReLU(),
@@ -241,7 +242,9 @@ class TrajectronRisk(Trajectron):
             aggregated_kl = torch.mean(torch.stack(kls)) # mean aggregated kl and inf - 
             aggregated_inf = torch.mean(torch.stack(infs)) # could make it weighted maybe keep learned weighting just for inputs
             if STACKING_CHOOSE_ONE:
-                return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf) + self.stacking_model_loss * epoch # incr stack loss every epoch
+                if INCR_ETA:
+                    return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf) + self.stacking_model_loss * epoch # incr stack loss every epoch
+                return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf) + self.stacking_model_loss # add stack choosing model loss
             return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf)
 
         if self.ensemble_method == 'stackboost':
@@ -281,8 +284,9 @@ class TrajectronRisk(Trajectron):
                 losses.append(loss)
 
             _ = self.aggregation_func(mask, encoded_inputs, node_type) 
-            return torch.mean(torch.stack(losses)) + self.stacking_model_loss * epoch # incr stack loss weight every epoch
-
+            if INCR_ETA:
+                return torch.mean(torch.stack(losses)) + self.stacking_model_loss * epoch # incr stack loss weight every epoch
+            return torch.mean(torch.stack(losses)) + self.stacking_model_loss
 
     def eval_loss(self, batch, node_type):
         (first_history_index,
