@@ -11,6 +11,128 @@ import model.dynamics as dynamic_module
 from environment.scene_graph import DirectedEdge
 # from ensemble_params import NUM_ENSEMBLE, activation_func
 
+def reshape_to_components(tensor, components, dimensions):
+    if len(tensor.shape) == 5:
+        return tensor
+    return torch.reshape(tensor, list(tensor.shape[:-1]) + [components, dimensions])
+
+def to_variance(log_sigmas, corrs):
+    sigma_x = torch.exp(log_sigmas)[:,:,:,0]
+    sigma_y = torch.exp(log_sigmas)[:,:,:,1]
+    rho_sigmax_sigmay = corrs * sigma_x * sigma_y
+
+    var_left = torch.stack([sigma_x*sigma_x, rho_sigmax_sigmay], dim=-1)
+    var_right = torch.stack([rho_sigmax_sigmay, sigma_y*sigma_y], dim=-1)
+
+    variance = torch.stack([var_left, var_right], dim=-1)
+    return variance
+
+def from_variance(variance):
+    sigma_x = torch.sqrt(variance[:,:,:,0,0]) + 1e-4 # to make sure there's no division by 0
+    sigma_y = torch.sqrt(variance[:,:,:,1,1]) + 1e-4 # [256]
+    if torch.any(sigma_x <= 0) or torch.any(sigma_x <= 0):
+        import pdb; pdb.set_trace()
+
+    rho_sigmax_sigmay = variance[:,:,:,1,0]
+    rho = rho_sigmax_sigmay / sigma_x / sigma_y
+
+    sigmas = torch.cat((sigma_x, sigma_y), dim=-1)
+    log_sigmas = torch.log(sigmas)
+
+    return(log_sigmas, rho)
+
+def inverse(matrix): # keep getting nans with torch.inverse, this only works for 2D matrix
+    det = torch.det(matrix)
+
+def multiply_gmms(gmm1, gmm2):
+    #################################################################
+    # Following formula from https://math.stackexchange.com/a/2414813
+    # Additionally, multiplying pis, and normalizing to get sum=1
+    #################################################################
+
+    (log_pis1, mus1, log_sigmas1, corrs1) = gmm1    
+    (log_pis2, mus2, log_sigmas2, corrs2) = gmm2
+    corrs1 = torch.clamp(corrs1, min=1e-5, max=(1.0 - 1e-5))
+    corrs2 = torch.clamp(corrs2, min=1e-5, max=(1.0 - 1e-5))
+    components = log_pis1.shape[-1]
+
+    # multiply pis and normalize
+    pis1 = torch.exp(log_pis1)
+    pis2 = torch.exp(log_pis2)
+    pis3 = pis1 * pis2
+    log_pis3 = log_pis1 + log_pis2 - torch.log(torch.sum(pis3, dim=-1, keepdims=True))
+
+    # multiply GMMs
+    mu1 = reshape_to_components(mus1, components, 2).unsqueeze(dim=-1)
+    mu2 = reshape_to_components(mus2, components, 2).unsqueeze(dim=-1)
+
+    log_sigma1 = reshape_to_components(log_sigmas1, components, 2)
+    log_sigma2 = reshape_to_components(log_sigmas2, components, 2)    
+    variance1 = to_variance(log_sigma1, corrs1)
+    variance2 = to_variance(log_sigma2, corrs2)
+
+    # # Calculations using Cholesky decomposition, which don't work (give non-symmetric variances sometimes)
+    # L = torch.cholesky(variance1 + variance2)
+    # L_inv = torch.inverse(L)
+    # mu1_tilde = torch.matmul(L_inv, mu1)
+    # mu2_tilde = torch.matmul(L_inv, mu2)
+    # variance1_tilde = torch.matmul(L_inv, variance1)
+    # variance2_tilde = torch.matmul(L_inv, variance2)
+    # variance1_tilde_T = torch.transpose(variance1_tilde, dim0=-2, dim1=-1)
+    # variance2_tilde_T = torch.transpose(variance2_tilde, dim0=-2, dim1=-1)
+    # variance3 = torch.matmul(variance1_tilde_T, variance2_tilde)
+    # mu3 = torch.matmul(variance2_tilde_T, mu1_tilde) + torch.matmul(variance1_tilde_T, mu2_tilde)
+
+    # Calculations using 3 inverse calculations (much more expensive, but doesn't give non-symmetric variances)
+    variance1_inv = torch.inverse(variance1)
+    variance2_inv = torch.inverse(variance2)
+    variance3 = torch.inverse(variance1_inv + variance2_inv)
+    mu3 = torch.matmul(variance3, torch.matmul(variance1_inv, mu1)) + torch.matmul(variance3, torch.matmul(variance2_inv, mu2))
+
+    mus3 = torch.cat((mu3[:,:,:,0,0], mu3[:,:,:,1,0]), dim=-1)
+    (log_sigmas3, corrs3) = from_variance(variance3)
+    corrs3 = torch.clamp(corrs3, min=1e-5, max=(1.0 - 1e-5))
+
+    # checking for nans or invalid correlation values
+    indices = torch.cat((torch.nonzero(~torch.isfinite(corrs3)), torch.nonzero(corrs3*corrs3 >= 1.0)))
+    for index in indices:
+        import pdb; pdb.set_trace()
+        symm_matrix = (variance1_inv + variance2_inv)[index[0], index[1], index[2]]
+        det = torch.det(symm_matrix)
+        b = symm_matrix[0,1]
+        new_b = -b / det
+        variance3[index[0], index[1], index[2], 0, 1] = new_b
+        variance3[index[0], index[1], index[2], 1, 0] = new_b
+    (log_sigmas3, corrs3) = from_variance(variance3)
+
+    gmm3 = (log_pis3, mus3, log_sigmas3, corrs3)
+    for e in gmm3:
+        if torch.any(~torch.isfinite(e)):
+            import pdb; pdb.set_trace()
+    return gmm3
+
+def add_gmm_params(gmm1, gmm2, lamda=1): # gmm1 is the prev combined params, gmm2 is the new one
+    (log_pis1, mus1, log_sigmas1, corrs1) = gmm1    
+    (log_pis2, mus2, log_sigmas2, corrs2) = gmm2
+
+    pis1 = torch.exp(log_pis1)
+    pis2 = torch.exp(log_pis2)
+    pis3 = pis1 + lamda * pis2 / (1 + lamda)
+    log_pis3 = torch.log(pis3)
+
+    mus3 = mus1 + lamda * mus2
+
+    log_sigmas3 = log_sigmas1 + lamda * log_sigmas2
+
+    corrs3 = corrs1 + lamda * corrs2
+    corrs3 = torch.clamp(corrs3, min=1e-5, max=(1.0 - 1e-5))
+
+    gmm3 = (log_pis3, mus3, log_sigmas3, corrs3)
+    for e in gmm3:
+        if torch.any(~torch.isfinite(e)):
+            import pdb; pdb.set_trace()
+    return gmm3
+
 class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
 
     # def create_graphical_model(self, edge_types):
@@ -36,6 +158,129 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
 
     #     for name, module in self.node_modules.items():
     #         module.to(self.device)
+
+    def p_y_xz(self, mode, x, x_nr_t, y_r, n_s_t0, z_stacked, prediction_horizon, # to allow multiplying of gmms
+               num_samples, num_components=1, gmm_mode=False):
+        r"""
+        .. math:: p_\psi(\mathbf{y}_i \mid \mathbf{x}_i, z)
+
+        :param mode: Mode in which the model is operated. E.g. Train, Eval, Predict.
+        :param x: Input / Condition tensor.
+        :param x_nr_t: Joint state of node and robot (if robot is in scene).
+        :param y: Future tensor.
+        :param y_r: Encoded future tensor.
+        :param n_s_t0: Standardized current state of the node.
+        :param z_stacked: Stacked latent state. [num_samples_z * num_samples_gmm, bs, latent_state]
+        :param prediction_horizon: Number of prediction timesteps.
+        :param num_samples: Number of samples from the latent space.
+        :param num_components: Number of GMM components.
+        :param gmm_mode: If True: The mode of the GMM is sampled.
+        :return: GMM2D. If mode is Predict, also samples from the GMM.
+        """
+        ph = prediction_horizon
+        pred_dim = self.pred_state_length
+
+        z = torch.reshape(z_stacked, (-1, self.latent.z_dim))
+        zx = torch.cat([z, x.repeat(num_samples * num_components, 1)], dim=1)
+
+        cell = self.node_modules[self.node_type + '/decoder/rnn_cell']
+        initial_h_model = self.node_modules[self.node_type + '/decoder/initial_h']
+
+        initial_state = initial_h_model(zx)
+
+        log_pis, mus, log_sigmas, corrs, a_sample = [], [], [], [], []
+
+        # Infer initial action state for node from current state
+        a_0 = self.node_modules[self.node_type + '/decoder/state_action'](n_s_t0)
+
+        state = initial_state
+        if self.hyperparams['incl_robot_node']:
+            input_ = torch.cat([zx,
+                                a_0.repeat(num_samples * num_components, 1),
+                                x_nr_t.repeat(num_samples * num_components, 1)], dim=1)
+        else:
+            input_ = torch.cat([zx, a_0.repeat(num_samples * num_components, 1)], dim=1)
+
+        for j in range(ph):
+            h_state = cell(input_, state)
+            log_pi_t, mu_t, log_sigma_t, corr_t = self.project_to_GMM_params(h_state)
+
+            gmm = GMM2D(log_pi_t, mu_t, log_sigma_t, corr_t)  # [k;bs, pred_dim]
+
+            if mode == ModeKeys.PREDICT and gmm_mode:
+                a_t = gmm.mode()
+            else:
+                a_t = gmm.rsample()
+
+            if num_components > 1:
+                if mode == ModeKeys.PREDICT:
+                    log_pis.append(self.latent.p_dist.logits.repeat(num_samples, 1, 1))
+                else:
+                    log_pis.append(self.latent.q_dist.logits.repeat(num_samples, 1, 1))
+            else:
+                log_pis.append(
+                    torch.ones_like(corr_t.reshape(num_samples, num_components, -1).permute(0, 2, 1).reshape(-1, 1))
+                )
+
+            mus.append(
+                mu_t.reshape(
+                    num_samples, num_components, -1, 2
+                ).permute(0, 2, 1, 3).reshape(-1, 2 * num_components)
+            )
+            log_sigmas.append(
+                log_sigma_t.reshape(
+                    num_samples, num_components, -1, 2
+                ).permute(0, 2, 1, 3).reshape(-1, 2 * num_components))
+            corrs.append(
+                corr_t.reshape(
+                    num_samples, num_components, -1
+                ).permute(0, 2, 1).reshape(-1, num_components))
+
+            if self.hyperparams['incl_robot_node']:
+                dec_inputs = [zx, a_t, y_r[:, j].repeat(num_samples * num_components, 1)]
+            else:
+                dec_inputs = [zx, a_t]
+            input_ = torch.cat(dec_inputs, dim=1)
+            state = h_state
+
+        log_pis = torch.stack(log_pis, dim=1)
+        mus = torch.stack(mus, dim=1)
+        log_sigmas = torch.stack(log_sigmas, dim=1)
+        corrs = torch.stack(corrs, dim=1)
+
+        ### ----NEW PART ----
+        if self.prev_gmm_params:
+            curr_gmm_params = (log_pis, mus, log_sigmas, corrs)
+            combined_gmm_params = add_gmm_params(self.prev_gmm_params, curr_gmm_params)
+            (log_pis, mus, log_sigmas, corrs) = combined_gmm_params
+
+        self.gmm_params = (log_pis.detach(), mus.detach(), log_sigmas.detach(), corrs.detach())
+        ###-------------------
+
+        a_dist = GMM2D(torch.reshape(log_pis, [num_samples, -1, ph, num_components]),
+                       torch.reshape(mus, [num_samples, -1, ph, num_components * pred_dim]),
+                       torch.reshape(log_sigmas, [num_samples, -1, ph, num_components * pred_dim]),
+                       torch.reshape(corrs, [num_samples, -1, ph, num_components]))
+
+        if self.hyperparams['dynamic'][self.node_type]['distribution']:
+            y_dist = self.dynamic.integrate_distribution(a_dist, x)
+            if torch.any(~torch.isfinite(y_dist.corrs)) or torch.any(~torch.isfinite(y_dist.log_sigmas)):
+                import pdb; pdb.set_trace()
+                y_dist.corrs = torch.nan_to_num(y_dist.corrs)
+                y_dist.log_sigmas = torch.nan_to_num(y_dist.log_sigmas)
+                
+        else:
+            y_dist = a_dist
+
+        if mode == ModeKeys.PREDICT:
+            if gmm_mode:
+                a_sample = a_dist.mode()
+            else:
+                a_sample = a_dist.rsample()
+            sampled_future = self.dynamic.integrate_samples(a_sample, x)
+            return y_dist, sampled_future
+        else:
+            return y_dist
 
     def train_loss(self,
                    inputs,
