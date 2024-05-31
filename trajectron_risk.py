@@ -9,13 +9,15 @@ from preprocessing_risk import get_timesteps_data
 import torch.nn as nn
 import wandb
 
-NUM_ENSEMBLE = [0, 1, 2]
-STACKING_CHOOSE_ONE = False # for stack only
-STACKBOOST_PERCENTAGE = 0.5 # for stackboost
-stacking_model_eta = 0.1 # for stack or stackboost
+NUM_ENSEMBLE = [0, 1, 2, 3]
+STACKING_CHOOSE_ONE = True # for stack only
 INCR_ETA = False
 
-def create_stacking_model(env, x_size):
+# removed because we're sweeping over these
+# STACKBOOST_PERCENTAGE = 0.5 # for stackboost
+# stacking_model_eta = 0.1 # for stack or stackboost
+
+def create_stacking_model(env, x_size, device):
     num_models = len(NUM_ENSEMBLE)
     models = {}
     for node_type in env.NodeType:
@@ -27,15 +29,15 @@ def create_stacking_model(env, x_size):
         # hidden_layer_size3 = int(2/3 * hidden_layer_size2 + output_layer_size)
         # hidden_layer_size4 = int(2/3 * hidden_layer_size3 + output_layer_size)
         models[node_type] = nn.Sequential(
-                                nn.Linear(input_layer_size, hidden_layer_size1).cuda(),
+                                nn.Linear(input_layer_size, hidden_layer_size1).to(device),
                                 nn.ReLU(),
-                                nn.Linear(hidden_layer_size1, output_layer_size).cuda(),
+                                nn.Linear(hidden_layer_size1, output_layer_size).to(device),
                                 # nn.ReLU(),
-                                # nn.Linear(hidden_layer_size, output_layer_size).cuda(),
+                                # nn.Linear(hidden_layer_size, output_layer_size).to(device),
                                 # nn.ReLU(),
-                                # nn.Linear(hidden_layer_size, hidden_layer_size).cuda(),
+                                # nn.Linear(hidden_layer_size, hidden_layer_size).to(device),
                                 # nn.ReLU(),
-                                # nn.Linear(hidden_layer_size, output_layer_size).cuda(),
+                                # nn.Linear(hidden_layer_size, output_layer_size).to(device),
                                 nn.ReLU())
     return models
 
@@ -82,7 +84,7 @@ class TrajectronRisk(Trajectron):
         if self.num_models == 1:
             return losses[0]
         model_input = torch.cat(tuple(encoded_inputs), 1).to(self.device)
-        model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans
+        model_output = self.agg_models[node_type].to(self.device)(model_input) + 0.00001 # to keep from getting nans
 
         if STACKING_CHOOSE_ONE:
             losses_stacked = torch.stack(losses)
@@ -91,7 +93,7 @@ class TrajectronRisk(Trajectron):
                 loss = nn.CrossEntropyLoss()
                 softmax = model_output.softmax(dim=1)
                 target = torch.argmax(losses_transposed, dim=1) # this is max because it's log_likelihood, not nll yet
-                self.stacking_model_loss = loss(softmax, target) * stacking_model_eta
+                self.stacking_model_loss = loss(softmax, target) * self.stack_eta
 
             inds = torch.argmax(model_output, dim=1) # return predictions of most probably correct model
             return losses_stacked[inds][0]
@@ -111,6 +113,7 @@ class TrajectronRisk(Trajectron):
         return normalized_weighted_average  
 
     def stackboosting(self, target, encoded_inputs, node_type, predict=False): # losses is either losses or predictions
+        # device = self.agg_models[self.env.NodeType[0]][0].weight.device
         model_input = torch.cat(tuple(encoded_inputs), 1).to(self.device)
         model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
         model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
@@ -124,10 +127,10 @@ class TrajectronRisk(Trajectron):
                 agg_preds[:,i,:,:] = predictions[model_inference[i]][:,i,:,:] # ith example gets predictions from chosen ens at i
             return agg_preds
         loss = nn.CrossEntropyLoss()
-        self.stacking_model_loss = loss(model_output, target.to(self.device)) * stacking_model_eta
+        self.stacking_model_loss = loss(model_output, target.to(self.device)) * self.stack_eta
         return model_inference
 
-    def set_aggregation(self, ensemble_method, agg_models=None):
+    def set_aggregation(self, ensemble_method, agg_models=None, percentage=None, eta=None):
         num_models = len(NUM_ENSEMBLE)
         self.ensemble_method = ensemble_method
         self.num_models = num_models
@@ -138,10 +141,13 @@ class TrajectronRisk(Trajectron):
         if ensemble_method == 'stack':
             self.agg_models = agg_models
             self.aggregation_func = self.stacking
+            self.stack_eta = eta
 
         if ensemble_method == 'stackboost':
             self.agg_models = agg_models
             self.aggregation_func = self.stackboosting
+            self.stackboost_percentage = percentage
+            self.stack_eta = eta
 
     def set_curr_iter(self, curr_iter):
         self.curr_iter = curr_iter
@@ -274,7 +280,7 @@ class TrajectronRisk(Trajectron):
                                         grid_tensor=grid_tensor)
                 encoded_inputs.append(encoded_input)
                 per_example_likelihood[mask != ens_index] = float('inf') # ignore examples belonging to prev models (since we're getting min k)
-                ind_k = int(STACKBOOST_PERCENTAGE*ind_k)
+                ind_k = int(self.stackboost_percentage * ind_k)
                 inds = torch.topk(per_example_likelihood, ind_k, largest=False, sorted=True) # get min k (worst=> smallest likelihood)
                 if ens_index != last_model_index: # if no more models, leave leftovers to last model
                     mask[inds.indices] += 1 # leave the ones it got wrong to the next model

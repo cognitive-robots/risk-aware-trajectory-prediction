@@ -26,7 +26,30 @@ from tensorboardX import SummaryWriter
 import wandb
 wandb.login()
 # torch.autograd.set_detect_anomaly(True)
-args.vis_every = None # not using it atm
+# Define sweep config
+sweep_configuration = {
+    "method": "bayes",
+    "name": "sweep",
+    "metric": {"goal": "minimize", "name": "val_loss"},
+    "parameters": {
+        'eta': {
+            # evenly-distributed logarithms 
+            'distribution': 'log_uniform_values',
+            'min': 0.01,
+            'max': 1,
+        },
+        # 'stackboost_percentage': {
+        #     # a flat distribution between 0 and 0.1
+        #     'distribution': 'q_uniform',
+        #     'min': 0.3,
+        #     'max': 0.5,
+        #     'q': 0.1,
+        # },
+    },
+}
+# Initialize sweep by passing in config.
+# (Optional) Provide a name of the project.
+sweep_id = wandb.sweep(sweep=sweep_configuration, project="my-first-sweep")
 
 if not torch.cuda.is_available() or args.device == 'cpu':
     args.device = torch.device('cpu')
@@ -109,6 +132,23 @@ def main():
     print('| Ensemble Method: %s' % args.ensemble_method)
     # #---------------
     print('-----------------------')
+
+    run = wandb.init(
+        # mode="disabled", # for testing
+        # Set the project where this run will be logged
+        project="train-risk",
+        # Track hyperparameters and run metadata
+        config={
+            "learning_rate": hyperparams['learning_rate'],
+            "epochs": args.train_epochs,
+        })
+    # note that we define values from `wandb.config`
+    # instead of defining hard values
+    eta = wandb.config.eta
+    if args.ensemble_method == 'stackboost':
+        percentage = wandb.config.stackboost_percentage
+    else:
+        percentage = None
 
     log_writer = None
     model_dir = None
@@ -248,9 +288,10 @@ def main():
     # create aggregation model for stacking
     aggregation_model = None
     if 'stack' in args.ensemble_method:
-        aggregation_model = create_stacking_model(train_env, trajectron.get_x_size())
+        aggregation_model = create_stacking_model(train_env, trajectron.get_x_size(), args.device)
 
-    trajectron.set_aggregation(args.ensemble_method, agg_models=aggregation_model)
+    trajectron.set_aggregation(args.ensemble_method, 
+            agg_models=aggregation_model, percentage=percentage, eta=eta)
     trajectron.set_annealing_params()
     print('Created Training Model.')
 
@@ -261,7 +302,8 @@ def main():
                                      log_writer,
                                      args.eval_device)
         eval_trajectron.set_environment(eval_env)
-        eval_trajectron.set_aggregation(args.ensemble_method, agg_models=aggregation_model)
+        eval_trajectron.set_aggregation(args.ensemble_method, 
+                agg_models=aggregation_model, percentage=percentage, eta=eta)
         eval_trajectron.set_annealing_params()
     print('Created Evaluation Model.')
 
@@ -278,15 +320,7 @@ def main():
         elif hyperparams['learning_rate_style'] == 'exp':
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
-    run = wandb.init(
-        # mode="disabled", # for testing
-        # Set the project where this run will be logged
-        project="train-risk",
-        # Track hyperparameters and run metadata
-        config={
-            "learning_rate": hyperparams['learning_rate'],
-            "epochs": args.train_epochs,
-        })
+
     #################################
     #           TRAINING            #
     #################################
@@ -426,6 +460,7 @@ def main():
             model_registrar.to(args.eval_device)
             with torch.no_grad():
                 # Calculate evaluation loss
+                val_losses = []
                 for node_type, data_loader in eval_data_loader.items():
                     eval_losses_to_average = []
                     counts = []
@@ -434,9 +469,9 @@ def main():
                     pbar = tqdm(data_loader, ncols=80)
                     # REMOVE_LATER = 0
                     for batch in pbar:
-                        # if REMOVE_LATER > 0:
+                        # if REMOVE_LATER > 1:
                         #     break;
-                        # REMOVE_LATER = 1                        
+                        # REMOVE_LATER += 1                        
                         eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type)
                         eval_losses_to_average.append(eval_loss_node_type)
                         counts.append(batch[0].shape[0])
@@ -448,17 +483,24 @@ def main():
                                                 log_writer,
                                                 f"{node_type}/eval_loss",
                                                 epoch)
-                    wandb.log({"{} full_eval_loss".format(node_type): np.average(eval_losses_to_average, weights=counts)})
+                    full_eval_loss = np.average(eval_losses_to_average, weights=counts)
+                    wandb.log({"{} full_eval_loss".format(node_type): full_eval_loss})
+                    val_losses.append(full_eval_loss)
+                wandb.log({"val_loss": np.mean(val_losses)})
 
                 # Predict batch timesteps for evaluation dataset evaluation
                 eval_batch_errors = []
+                # REMOVE_LATER = 0
                 for scene in tqdm(eval_scenes, desc='Sample Evaluation', ncols=80):
+                    # if REMOVE_LATER > 5:
+                    #     break;
+                    # REMOVE_LATER += 1   
                     timesteps = scene.sample_timesteps(args.eval_batch_size)
-
+                    mink = 20
                     predictions = eval_trajectron.predict(scene,
                                                           timesteps,
                                                           ph,
-                                                          num_samples=50,
+                                                          num_samples=mink,
                                                           min_future_timesteps=ph,
                                                           full_dist=False)
 
@@ -468,17 +510,31 @@ def main():
                                                                                  ph=ph,
                                                                                  node_type_enum=eval_env.NodeType,
                                                                                  map=scene.map))
+                for node_type in eval_env.NodeType:
+                    minFDEs = []
+                    kdes = []
+                    for scene_errors in eval_batch_errors:
+                        fdes = np.array(scene_errors[node_type]['fde']).reshape(-1,mink)
+                        minFDE = np.min(fdes, axis=1)
+                        minFDEs.extend(minFDE.tolist())
+                        kdes.extend(scene_errors[node_type]['kde'])
+                    wandb.log({"minFDE_errors {}".format(node_type): np.mean(minFDEs)})
+                    wandb.log({"KDE_errors {}".format(node_type): np.mean(kdes)})
 
-                evaluation.log_batch_errors(eval_batch_errors,
-                                            log_writer,
-                                            'eval',
-                                            epoch,
-                                            bar_plot=['kde'],
-                                            box_plot=['ade', 'fde'])
+                # evaluation.log_batch_errors(eval_batch_errors,
+                #                             log_writer,
+                #                             'eval',
+                #                             epoch,
+                #                             bar_plot=['kde'],
+                #                             box_plot=['ade', 'fde'])
 
                 # Predict maximum likelihood batch timesteps for evaluation dataset evaluation
                 eval_batch_errors_ml = []
+                # REMOVE_LATER = 0
                 for scene in tqdm(eval_scenes, desc='MM Evaluation', ncols=80):
+                    # if REMOVE_LATER > 5:
+                    #     break;
+                    # REMOVE_LATER += 1   
                     timesteps = scene.sample_timesteps(scene.timesteps)
 
                     predictions = eval_trajectron.predict(scene,
@@ -497,15 +553,22 @@ def main():
                                                                                     map=scene.map,
                                                                                     node_type_enum=eval_env.NodeType,
                                                                                     kde=False))
+                for node_type in eval_env.NodeType:
+                    fdes = []
+                    for scene_errors in eval_batch_errors_ml:
+                        fdes.extend(scene_errors[node_type]['fde'])
+                    wandb.log({"fde_ml_errors {}".format(node_type): np.mean(fdes)})
 
-                evaluation.log_batch_errors(eval_batch_errors_ml,
-                                            log_writer,
-                                            'eval/ml',
-                                            epoch)
+                # evaluation.log_batch_errors(eval_batch_errors_ml,
+                #                             log_writer,
+                #                             'eval/ml',
+                #                             epoch)
 
         if args.save_every is not None and args.debug is False and epoch % args.save_every == 0:
             model_registrar.save_models(epoch)
 
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main()
+
+wandb.agent(sweep_id, function=main, count=4)
