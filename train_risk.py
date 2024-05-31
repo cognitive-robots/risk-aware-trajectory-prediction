@@ -26,30 +26,31 @@ from tensorboardX import SummaryWriter
 import wandb
 wandb.login()
 # torch.autograd.set_detect_anomaly(True)
+
 # Define sweep config
-sweep_configuration = {
-    "method": "bayes",
-    "name": "sweep",
-    "metric": {"goal": "minimize", "name": "val_loss"},
-    "parameters": {
-        'eta': {
-            # evenly-distributed logarithms 
-            'distribution': 'log_uniform_values',
-            'min': 0.01,
-            'max': 1,
-        },
-        # 'stackboost_percentage': {
-        #     # a flat distribution between 0 and 0.1
-        #     'distribution': 'q_uniform',
-        #     'min': 0.3,
-        #     'max': 0.5,
-        #     'q': 0.1,
-        # },
-    },
-}
-# Initialize sweep by passing in config.
-# (Optional) Provide a name of the project.
-sweep_id = wandb.sweep(sweep=sweep_configuration, project="my-first-sweep")
+# sweep_configuration = {
+#     "method": "bayes",
+#     "name": "sweep",
+#     "metric": {"goal": "minimize", "name": "val_loss"},
+#     "parameters": {
+#         'eta': {
+#             # evenly-distributed logarithms 
+#             'distribution': 'log_uniform_values',
+#             'min': 0.01,
+#             'max': 1,
+#         },
+#         # 'stackboost_percentage': {
+#         #     # a flat distribution between 0 and 0.1
+#         #     'distribution': 'q_uniform',
+#         #     'min': 0.3,
+#         #     'max': 0.5,
+#         #     'q': 0.1,
+#         # },
+#     },
+# }
+# # Initialize sweep by passing in config.
+# # (Optional) Provide a name of the project.
+# sweep_id = wandb.sweep(sweep=sweep_configuration, project="my-first-sweep")
 
 if not torch.cuda.is_available() or args.device == 'cpu':
     args.device = torch.device('cpu')
@@ -142,13 +143,14 @@ def main():
             "learning_rate": hyperparams['learning_rate'],
             "epochs": args.train_epochs,
         })
-    # note that we define values from `wandb.config`
-    # instead of defining hard values
-    eta = wandb.config.eta
-    if args.ensemble_method == 'stackboost':
-        percentage = wandb.config.stackboost_percentage
-    else:
-        percentage = None
+    eta = None
+    percentage = None
+    # # uncomment if we're sweeping
+    # # note that we define values from `wandb.config`
+    # # instead of defining hard values
+    # eta = wandb.config.eta
+    # if args.ensemble_method == 'stackboost':
+    #     percentage = wandb.config.stackboost_percentage
 
     log_writer = None
     model_dir = None
@@ -568,7 +570,7 @@ def main():
             model_registrar.save_models(epoch)
 
 
-# if __name__ == '__main__':
-#     main()
+if __name__ == '__main__':
+    main()
 
-wandb.agent(sweep_id, function=main, count=4)
+# wandb.agent(sweep_id, function=main, count=4) # to sweep, uncomment this, and comment 'if name==main: main()'

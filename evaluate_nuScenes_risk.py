@@ -153,7 +153,8 @@ if __name__ == "__main__":
             pd.DataFrame({'value': eval_fde_batch_errors, 'metric': 'fde', 'type': 'min{}'.format(mink)}
                         ).to_csv(os.path.join(args.output_path, args.output_tag + "_" + str(ph) + '_fde_mink.csv'))
 
-            ############### FULL KDE ###############
+
+            ############### FULL ###############
             # eval_ade_batch_errors = np.array([])
             # eval_fde_batch_errors = np.array([])
             eval_kde_nll = np.array([])
