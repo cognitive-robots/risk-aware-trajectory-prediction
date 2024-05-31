@@ -26,6 +26,7 @@ from tensorboardX import SummaryWriter
 import wandb
 wandb.login()
 # torch.autograd.set_detect_anomaly(True)
+args.vis_every = None # not using it atm
 
 # Define sweep config
 # sweep_configuration = {

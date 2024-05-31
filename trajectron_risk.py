@@ -15,7 +15,7 @@ STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 stacking_model_eta = 0.1 # for stack or stackboost
 INCR_ETA = False
 
-# removed because we're sweeping over these
+# if we're sweeping over these, these are ignored
 # STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 # stacking_model_eta = 0.1 # for stack or stackboost
 
