@@ -27,6 +27,7 @@ import wandb
 wandb.login()
 # torch.autograd.set_detect_anomaly(True)
 args.vis_every = None # not using it atm
+NUM_ENSEMBLE = [0, 1]
 
 # Define sweep config
 # sweep_configuration = {
@@ -132,6 +133,7 @@ def main():
     print('| Heatmap Data: %s' % hyperparams['heatmap_data'])
     print('| Grid Data: %s' % hyperparams['grid_data'])
     print('| Ensemble Method: %s' % args.ensemble_method)
+    print('| Ensemble Models: %s' % NUM_ENSEMBLE)
     # #---------------
     print('-----------------------')
 
@@ -286,14 +288,14 @@ def main():
                             log_writer,
                             args.device)
 
-    trajectron.set_environment(train_env)
+    trajectron.set_environment(train_env, NUM_ENSEMBLE)
 
     # create aggregation model for stacking
     aggregation_model = None
     if 'stack' in args.ensemble_method:
-        aggregation_model = create_stacking_model(train_env, trajectron.get_x_size(), args.device)
+        aggregation_model = create_stacking_model(train_env, trajectron.get_x_size(), args.device, NUM_ENSEMBLE)
 
-    trajectron.set_aggregation(args.ensemble_method, 
+    trajectron.set_aggregation(args.ensemble_method,
             agg_models=aggregation_model, percentage=percentage, eta=eta)
     trajectron.set_annealing_params()
     print('Created Training Model.')
@@ -304,8 +306,8 @@ def main():
                                      hyperparams,
                                      log_writer,
                                      args.eval_device)
-        eval_trajectron.set_environment(eval_env)
-        eval_trajectron.set_aggregation(args.ensemble_method, 
+        eval_trajectron.set_environment(eval_env, NUM_ENSEMBLE)
+        eval_trajectron.set_aggregation(args.ensemble_method,
                 agg_models=aggregation_model, percentage=percentage, eta=eta)
         eval_trajectron.set_annealing_params()
     print('Created Evaluation Model.')
@@ -324,251 +326,263 @@ def main():
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
 
-    #################################
-    #           TRAINING            #
-    #################################
-    curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
-    for epoch in range(1, args.train_epochs + 1):
-        wandb.log({"epoch": epoch})
-        model_registrar.to(args.device)
-        train_dataset.augment = args.augment
-        for node_type, data_loader in train_data_loader.items():
-            train_losses = []
-            counts = []
-            curr_iter = curr_iter_node_type[node_type]
-            pbar = tqdm(data_loader, ncols=80)
-            # REMOVE_LATER = 0
-            for batch in pbar:
-                # if REMOVE_LATER > 0:
-                #     break;
-                # REMOVE_LATER = 1
-                trajectron.set_curr_iter(curr_iter)
-                trajectron.step_annealers(node_type)
-                optimizer[node_type].zero_grad()
-                # -------- ADDED HEATMAP_TENSOR & WANDB -------
-                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor, epoch)
-                train_losses.append(train_loss.item())
-                counts.append(batch[0].shape[0])
-                # -------------------------------------
-                pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
-                train_loss.backward()
-                # Clipping gradients.
-                if hyperparams['grad_clip'] is not None:
-                    nn.utils.clip_grad_value_(model_registrar.parameters(), hyperparams['grad_clip'])
-                optimizer[node_type].step()
-
-                # Stepping forward the learning rate scheduler and annealers.
-                lr_scheduler[node_type].step()
-
-                if not args.debug:
-                    log_writer.add_scalar(f"{node_type}/train/learning_rate",
-                                          lr_scheduler[node_type].get_last_lr()[0],
-                                          curr_iter)
-                    log_writer.add_scalar(f"{node_type}/train/loss", train_loss, curr_iter)
-
-                curr_iter += 1
-            curr_iter_node_type[node_type] = curr_iter
-            wandb.log({"{} full_train_loss".format(node_type): np.average(train_losses, weights=counts)})
-        train_dataset.augment = False
-        if args.eval_every is not None or args.vis_every is not None:
-            eval_trajectron.set_curr_iter(epoch)
-
+    per_trainset_loop = [None]
+    if args.ensemble_method == 'gradboost':
+        per_trainset_loop = NUM_ENSEMBLE
+    for gradboost_index in per_trainset_loop:
+        label = ''
+        if gradboost_index:
+            label = gradboost_index # for labeling wandb recordings
         #################################
-        #        VISUALIZATION          #
+        #           TRAINING            #
         #################################
-        args.vis_every = None
-        if args.vis_every is not None and not args.debug and epoch % args.vis_every == 0 and epoch > 0:
-            max_hl = hyperparams['maximum_history_length']
-            ph = hyperparams['prediction_horizon']
-            with torch.no_grad():
-                # Predict random timestep to plot for train data set
-                if args.scene_freq_mult_viz:
-                    scene = np.random.choice(train_scenes, p=train_scenes_sample_probs)
-                else:
-                    scene = np.random.choice(train_scenes)
-                timestep = scene.sample_timesteps(1, min_future_timesteps=ph)
-                predictions = trajectron.predict(scene,
-                                                 timestep,
-                                                 ph,
-                                                 min_future_timesteps=ph,
-                                                 z_mode=True,
-                                                 gmm_mode=True,
-                                                 all_z_sep=False,
-                                                 full_dist=False)
+        curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
+        for epoch in range(1, args.train_epochs + 1):
+            wandb.log({"epoch{}".format(label): epoch})
+            model_registrar.to(args.device)
+            train_dataset.augment = args.augment
+            for node_type, data_loader in train_data_loader.items():
+                train_losses = []
+                counts = []
+                curr_iter = curr_iter_node_type[node_type]
+                pbar = tqdm(data_loader, ncols=80)
+                # REMOVE_LATER = 0
+                for batch in pbar:
+                    # if REMOVE_LATER > 0:
+                    #     break;
+                    # REMOVE_LATER = 1
+                    trajectron.set_curr_iter(curr_iter)
+                    trajectron.step_annealers(node_type)
+                    optimizer[node_type].zero_grad()
+                    # -------- ADDED HEATMAP_TENSOR & WANDB -------
+                    train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor, epoch, gradboost_index)
+                    train_losses.append(train_loss.item())
+                    counts.append(batch[0].shape[0])
+                    # -------------------------------------
+                    pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
+                    train_loss.backward()
+                    # Clipping gradients.
+                    if hyperparams['grad_clip'] is not None:
+                        nn.utils.clip_grad_value_(model_registrar.parameters(), hyperparams['grad_clip'])
+                    optimizer[node_type].step()
 
-                # Plot predicted timestep for random scene
-                fig, ax = plt.subplots(figsize=(10, 10))
-                visualization.visualize_prediction(ax,
-                                                   predictions,
-                                                   scene.dt,
-                                                   max_hl=max_hl,
-                                                   ph=ph,
-                                                   map=scene.map['VISUALIZATION'] if scene.map is not None else None)
-                ax.set_title(f"{scene.name}-t: {timestep}")
-                log_writer.add_figure('train/prediction', fig, epoch)
+                    # Stepping forward the learning rate scheduler and annealers.
+                    lr_scheduler[node_type].step()
 
+                    if not args.debug:
+                        log_writer.add_scalar(f"{node_type}/train/learning_rate",
+                                            lr_scheduler[node_type].get_last_lr()[0],
+                                            curr_iter)
+                        log_writer.add_scalar(f"{node_type}/train/loss", train_loss, curr_iter)
+
+                    curr_iter += 1
+                curr_iter_node_type[node_type] = curr_iter
+                wandb.log({"{} full_train_loss{}".format(node_type, label): np.average(train_losses, weights=counts)})
+            train_dataset.augment = False
+            if args.eval_every is not None or args.vis_every is not None:
+                eval_trajectron.set_curr_iter(epoch)
+
+            #################################
+            #        VISUALIZATION          #
+            #################################
+            args.vis_every = None
+            if args.vis_every is not None and not args.debug and epoch % args.vis_every == 0 and epoch > 0:
+                max_hl = hyperparams['maximum_history_length']
+                ph = hyperparams['prediction_horizon']
+                with torch.no_grad():
+                    # Predict random timestep to plot for train data set
+                    if args.scene_freq_mult_viz:
+                        scene = np.random.choice(train_scenes, p=train_scenes_sample_probs)
+                    else:
+                        scene = np.random.choice(train_scenes)
+                    timestep = scene.sample_timesteps(1, min_future_timesteps=ph)
+                    predictions = trajectron.predict(scene,
+                                                    timestep,
+                                                    ph,
+                                                    last_model_index=gradboost_index,
+                                                    min_future_timesteps=ph,
+                                                    z_mode=True,
+                                                    gmm_mode=True,
+                                                    all_z_sep=False,
+                                                    full_dist=False)
+
+                    # Plot predicted timestep for random scene
+                    fig, ax = plt.subplots(figsize=(10, 10))
+                    visualization.visualize_prediction(ax,
+                                                    predictions,
+                                                    scene.dt,
+                                                    max_hl=max_hl,
+                                                    ph=ph,
+                                                    map=scene.map['VISUALIZATION'] if scene.map is not None else None)
+                    ax.set_title(f"{scene.name}-t: {timestep}")
+                    log_writer.add_figure('train/prediction', fig, epoch)
+
+                    model_registrar.to(args.eval_device)
+                    # Predict random timestep to plot for eval data set
+                    if args.scene_freq_mult_viz:
+                        scene = np.random.choice(eval_scenes, p=eval_scenes_sample_probs)
+                    else:
+                        scene = np.random.choice(eval_scenes)
+                    timestep = scene.sample_timesteps(1, min_future_timesteps=ph)
+                    predictions = eval_trajectron.predict(scene,
+                                                        timestep,
+                                                        ph,
+                                                        last_model_index=gradboost_index,
+                                                        num_samples=20,
+                                                        min_future_timesteps=ph,
+                                                        z_mode=False,
+                                                        full_dist=False)
+
+                    # Plot predicted timestep for random scene
+                    fig, ax = plt.subplots(figsize=(10, 10))
+                    visualization.visualize_prediction(ax,
+                                                    predictions,
+                                                    scene.dt,
+                                                    max_hl=max_hl,
+                                                    ph=ph,
+                                                    map=scene.map['VISUALIZATION'] if scene.map is not None else None)
+                    ax.set_title(f"{scene.name}-t: {timestep}")
+                    log_writer.add_figure('eval/prediction', fig, epoch)
+
+                    # Predict random timestep to plot for eval data set
+                    predictions = eval_trajectron.predict(scene,
+                                                        timestep,
+                                                        ph,
+                                                        min_future_timesteps=ph,
+                                                        last_model_index=gradboost_index,
+                                                        z_mode=True,
+                                                        gmm_mode=True,
+                                                        all_z_sep=True,
+                                                        full_dist=False)
+
+                    # Plot predicted timestep for random scene
+                    fig, ax = plt.subplots(figsize=(10, 10))
+                    visualization.visualize_prediction(ax,
+                                                    predictions,
+                                                    scene.dt,
+                                                    max_hl=max_hl,
+                                                    ph=ph,
+                                                    map=scene.map['VISUALIZATION'] if scene.map is not None else None)
+                    ax.set_title(f"{scene.name}-t: {timestep}")
+                    log_writer.add_figure('eval/prediction_all_z', fig, epoch)
+
+            #################################
+            #           EVALUATION          #
+            #################################
+            if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
+                max_hl = hyperparams['maximum_history_length']
+                ph = hyperparams['prediction_horizon']
                 model_registrar.to(args.eval_device)
-                # Predict random timestep to plot for eval data set
-                if args.scene_freq_mult_viz:
-                    scene = np.random.choice(eval_scenes, p=eval_scenes_sample_probs)
-                else:
-                    scene = np.random.choice(eval_scenes)
-                timestep = scene.sample_timesteps(1, min_future_timesteps=ph)
-                predictions = eval_trajectron.predict(scene,
-                                                      timestep,
-                                                      ph,
-                                                      num_samples=20,
-                                                      min_future_timesteps=ph,
-                                                      z_mode=False,
-                                                      full_dist=False)
+                with torch.no_grad():
+                    # Calculate evaluation loss
+                    val_losses = []
+                    for node_type, data_loader in eval_data_loader.items():
+                        eval_losses_to_average = []
+                        counts = []
+                        eval_loss = []
+                        print(f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
+                        pbar = tqdm(data_loader, ncols=80)
+                        # REMOVE_LATER = 0
+                        for batch in pbar:
+                            # if REMOVE_LATER > 1:
+                            #     break;
+                            # REMOVE_LATER += 1                        
+                            eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type, gradboost_index)
+                            eval_losses_to_average.append(eval_loss_node_type)
+                            counts.append(batch[0].shape[0])
+                            pbar.set_description(f"Epoch {epoch}, {node_type} L: {eval_loss_node_type.item():.2f}")
+                            eval_loss.append({node_type: {'nll': [eval_loss_node_type]}})
+                            del batch
 
-                # Plot predicted timestep for random scene
-                fig, ax = plt.subplots(figsize=(10, 10))
-                visualization.visualize_prediction(ax,
-                                                   predictions,
-                                                   scene.dt,
-                                                   max_hl=max_hl,
-                                                   ph=ph,
-                                                   map=scene.map['VISUALIZATION'] if scene.map is not None else None)
-                ax.set_title(f"{scene.name}-t: {timestep}")
-                log_writer.add_figure('eval/prediction', fig, epoch)
+                        evaluation.log_batch_errors(eval_loss,
+                                                    log_writer,
+                                                    f"{node_type}/eval_loss",
+                                                    epoch)
+                        full_eval_loss = np.average(eval_losses_to_average, weights=counts)
+                        wandb.log({"{} full_eval_loss{}".format(node_type, label): full_eval_loss})
+                        val_losses.append(full_eval_loss)
+                    wandb.log({"val_loss{}".format(label): np.mean(val_losses)})
 
-                # Predict random timestep to plot for eval data set
-                predictions = eval_trajectron.predict(scene,
-                                                      timestep,
-                                                      ph,
-                                                      min_future_timesteps=ph,
-                                                      z_mode=True,
-                                                      gmm_mode=True,
-                                                      all_z_sep=True,
-                                                      full_dist=False)
-
-                # Plot predicted timestep for random scene
-                fig, ax = plt.subplots(figsize=(10, 10))
-                visualization.visualize_prediction(ax,
-                                                   predictions,
-                                                   scene.dt,
-                                                   max_hl=max_hl,
-                                                   ph=ph,
-                                                   map=scene.map['VISUALIZATION'] if scene.map is not None else None)
-                ax.set_title(f"{scene.name}-t: {timestep}")
-                log_writer.add_figure('eval/prediction_all_z', fig, epoch)
-
-        #################################
-        #           EVALUATION          #
-        #################################
-        if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
-            max_hl = hyperparams['maximum_history_length']
-            ph = hyperparams['prediction_horizon']
-            model_registrar.to(args.eval_device)
-            with torch.no_grad():
-                # Calculate evaluation loss
-                val_losses = []
-                for node_type, data_loader in eval_data_loader.items():
-                    eval_losses_to_average = []
-                    counts = []
-                    eval_loss = []
-                    print(f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
-                    pbar = tqdm(data_loader, ncols=80)
+                    # Predict batch timesteps for evaluation dataset evaluation
+                    eval_batch_errors = []
                     # REMOVE_LATER = 0
-                    for batch in pbar:
+                    for scene in tqdm(eval_scenes, desc='Sample Evaluation', ncols=80):
                         # if REMOVE_LATER > 1:
                         #     break;
-                        # REMOVE_LATER += 1                        
-                        eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type)
-                        eval_losses_to_average.append(eval_loss_node_type)
-                        counts.append(batch[0].shape[0])
-                        pbar.set_description(f"Epoch {epoch}, {node_type} L: {eval_loss_node_type.item():.2f}")
-                        eval_loss.append({node_type: {'nll': [eval_loss_node_type]}})
-                        del batch
+                        # REMOVE_LATER += 1   
+                        timesteps = scene.sample_timesteps(args.eval_batch_size)
+                        mink = 20
+                        predictions = eval_trajectron.predict(scene,
+                                                            timesteps,
+                                                            ph,
+                                                            last_model_index=gradboost_index,
+                                                            num_samples=mink,
+                                                            min_future_timesteps=ph,
+                                                            full_dist=False)
 
-                    evaluation.log_batch_errors(eval_loss,
-                                                log_writer,
-                                                f"{node_type}/eval_loss",
-                                                epoch)
-                    full_eval_loss = np.average(eval_losses_to_average, weights=counts)
-                    wandb.log({"{} full_eval_loss".format(node_type): full_eval_loss})
-                    val_losses.append(full_eval_loss)
-                wandb.log({"val_loss": np.mean(val_losses)})
-
-                # Predict batch timesteps for evaluation dataset evaluation
-                eval_batch_errors = []
-                # REMOVE_LATER = 0
-                for scene in tqdm(eval_scenes, desc='Sample Evaluation', ncols=80):
-                    # if REMOVE_LATER > 5:
-                    #     break;
-                    # REMOVE_LATER += 1   
-                    timesteps = scene.sample_timesteps(args.eval_batch_size)
-                    mink = 20
-                    predictions = eval_trajectron.predict(scene,
-                                                          timesteps,
-                                                          ph,
-                                                          num_samples=mink,
-                                                          min_future_timesteps=ph,
-                                                          full_dist=False)
-
-                    eval_batch_errors.append(evaluation.compute_batch_statistics(predictions,
-                                                                                 scene.dt,
-                                                                                 max_hl=max_hl,
-                                                                                 ph=ph,
-                                                                                 node_type_enum=eval_env.NodeType,
-                                                                                 map=scene.map))
-                for node_type in eval_env.NodeType:
-                    minFDEs = []
-                    kdes = []
-                    for scene_errors in eval_batch_errors:
-                        fdes = np.array(scene_errors[node_type]['fde']).reshape(-1,mink)
-                        minFDE = np.min(fdes, axis=1)
-                        minFDEs.extend(minFDE.tolist())
-                        kdes.extend(scene_errors[node_type]['kde'])
-                    wandb.log({"minFDE_errors {}".format(node_type): np.mean(minFDEs)})
-                    wandb.log({"KDE_errors {}".format(node_type): np.mean(kdes)})
-
-                # evaluation.log_batch_errors(eval_batch_errors,
-                #                             log_writer,
-                #                             'eval',
-                #                             epoch,
-                #                             bar_plot=['kde'],
-                #                             box_plot=['ade', 'fde'])
-
-                # Predict maximum likelihood batch timesteps for evaluation dataset evaluation
-                eval_batch_errors_ml = []
-                # REMOVE_LATER = 0
-                for scene in tqdm(eval_scenes, desc='MM Evaluation', ncols=80):
-                    # if REMOVE_LATER > 5:
-                    #     break;
-                    # REMOVE_LATER += 1   
-                    timesteps = scene.sample_timesteps(scene.timesteps)
-
-                    predictions = eval_trajectron.predict(scene,
-                                                          timesteps,
-                                                          ph,
-                                                          num_samples=1,
-                                                          min_future_timesteps=ph,
-                                                          z_mode=True,
-                                                          gmm_mode=True,
-                                                          full_dist=False)
-
-                    eval_batch_errors_ml.append(evaluation.compute_batch_statistics(predictions,
+                        eval_batch_errors.append(evaluation.compute_batch_statistics(predictions,
                                                                                     scene.dt,
                                                                                     max_hl=max_hl,
                                                                                     ph=ph,
-                                                                                    map=scene.map,
                                                                                     node_type_enum=eval_env.NodeType,
-                                                                                    kde=False))
-                for node_type in eval_env.NodeType:
-                    fdes = []
-                    for scene_errors in eval_batch_errors_ml:
-                        fdes.extend(scene_errors[node_type]['fde'])
-                    wandb.log({"fde_ml_errors {}".format(node_type): np.mean(fdes)})
+                                                                                    map=scene.map))
+                    for node_type in eval_env.NodeType:
+                        minFDEs = []
+                        kdes = []
+                        for scene_errors in eval_batch_errors:
+                            fdes = np.array(scene_errors[node_type]['fde']).reshape(-1,mink)
+                            minFDE = np.min(fdes, axis=1)
+                            minFDEs.extend(minFDE.tolist())
+                            kdes.extend(scene_errors[node_type]['kde'])
+                        wandb.log({"minFDE_errors{} {}".format(label, node_type): np.mean(minFDEs)})
+                        wandb.log({"KDE_errors{} {}".format(label, node_type): np.mean(kdes)})
 
-                # evaluation.log_batch_errors(eval_batch_errors_ml,
-                #                             log_writer,
-                #                             'eval/ml',
-                #                             epoch)
+                    # evaluation.log_batch_errors(eval_batch_errors,
+                    #                             log_writer,
+                    #                             'eval',
+                    #                             epoch,
+                    #                             bar_plot=['kde'],
+                    #                             box_plot=['ade', 'fde'])
 
-        if args.save_every is not None and args.debug is False and epoch % args.save_every == 0:
-            model_registrar.save_models(epoch)
+                    # Predict maximum likelihood batch timesteps for evaluation dataset evaluation
+                    eval_batch_errors_ml = []
+                    # REMOVE_LATER = 0
+                    for scene in tqdm(eval_scenes, desc='MM Evaluation', ncols=80):
+                        # if REMOVE_LATER > 1:
+                        #     break;
+                        # REMOVE_LATER += 1   
+                        timesteps = scene.sample_timesteps(scene.timesteps)
+
+                        predictions = eval_trajectron.predict(scene,
+                                                            timesteps,
+                                                            ph,
+                                                            num_samples=1,
+                                                            min_future_timesteps=ph,
+                                                            last_model_index=gradboost_index,
+                                                            z_mode=True,
+                                                            gmm_mode=True,
+                                                            full_dist=False)
+
+                        eval_batch_errors_ml.append(evaluation.compute_batch_statistics(predictions,
+                                                                                        scene.dt,
+                                                                                        max_hl=max_hl,
+                                                                                        ph=ph,
+                                                                                        map=scene.map,
+                                                                                        node_type_enum=eval_env.NodeType,
+                                                                                        kde=False))
+                    for node_type in eval_env.NodeType:
+                        fdes = []
+                        for scene_errors in eval_batch_errors_ml:
+                            fdes.extend(scene_errors[node_type]['fde'])
+                        wandb.log({"fde_ml_errors{} {}".format(label, node_type): np.mean(fdes)})
+
+                    # evaluation.log_batch_errors(eval_batch_errors_ml,
+                    #                             log_writer,
+                    #                             'eval/ml',
+                    #                             epoch)
+
+            if args.save_every is not None and args.debug is False and epoch % args.save_every == 0:
+                model_registrar.save_models(epoch)
 
 
 if __name__ == '__main__':

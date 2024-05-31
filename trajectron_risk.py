@@ -9,7 +9,6 @@ from preprocessing_risk import get_timesteps_data
 import torch.nn as nn
 import wandb
 
-NUM_ENSEMBLE = [0, 1]
 STACKING_CHOOSE_ONE = False # for stack only
 STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 stacking_model_eta = 0.1 # for stack or stackboost
@@ -19,8 +18,8 @@ INCR_ETA = False
 # STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 # stacking_model_eta = 0.1 # for stack or stackboost
 
-def create_stacking_model(env, x_size, device):
-    num_models = len(NUM_ENSEMBLE)
+def create_stacking_model(env, x_size, device, num_ensemble):
+    num_models = len(num_ensemble)
     models = {}
     for node_type in env.NodeType:
         input_layer_size = x_size[node_type]*num_models
@@ -53,14 +52,15 @@ def mask_neighbors(neighbors, cond): #cond is an if condition like (mask == ens_
 
 class TrajectronRisk(Trajectron):
 
-    def set_environment(self, env):
+    def set_environment(self, env, num_ensemble):
         self.env = env
+        self.num_ensemble = num_ensemble
 
         self.node_models_dict.clear()
         edge_types = env.get_edge_types()
 
         x_size = {}
-        for ens_index in NUM_ENSEMBLE:
+        for ens_index in num_ensemble:
             self.node_models_dict[ens_index] = {}
             for node_type in env.NodeType:
                 # Only add a Model for NodeTypes we want to predict
@@ -141,7 +141,7 @@ class TrajectronRisk(Trajectron):
         return model_inference
 
     def set_aggregation(self, ensemble_method, agg_models=None, percentage=None, eta=None):
-        num_models = len(NUM_ENSEMBLE)
+        num_models = len(self.num_ensemble)
         self.ensemble_method = ensemble_method
         self.num_models = num_models
         if not eta:
@@ -152,7 +152,7 @@ class TrajectronRisk(Trajectron):
         if ensemble_method == 'bag':
             self.aggregation_func = self.bagging
 
-        if ensemble_method == 'boost':
+        if (self.ensemble_method == 'boost') or (self.ensemble_method == 'gradboost'):
             self.aggregation_func = self.boosting
 
         if ensemble_method == 'stack':
@@ -178,14 +178,14 @@ class TrajectronRisk(Trajectron):
                 model.set_annealing_params()
 
     def step_annealers(self, node_type=None):
-        for ens_index in NUM_ENSEMBLE:
+        for ens_index in self.num_ensemble:
             if node_type is None:
                 for node_type in self.node_models_dict:
                     self.node_models_dict[ens_index][node_type].step_annealers()
             else:
                 self.node_models_dict[ens_index][node_type].step_annealers()
 
-    def train_loss(self, batch, node_type, heatmap_tensor, grid_tensor, epoch):
+    def train_loss(self, batch, node_type, heatmap_tensor, grid_tensor, epoch, gradboost_index=None):
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
@@ -209,10 +209,44 @@ class TrajectronRisk(Trajectron):
             robot_traj_st_t = robot_traj_st_t.to(self.device)
         if type(map) == torch.Tensor:
             map = map.to(self.device)
+
+        if self.ensemble_method == 'gradboost':
+            ens_index = gradboost_index
+            model = self.node_models_dict[ens_index][node_type]
+
+            if ens_index > 0:
+                prev_model = self.node_models_dict[ens_index-1][node_type]
+                nll = prev_model.eval_loss(inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph)
+                model.prev_gmm_params = prev_model.gmm_params # sets the prev_gmm_params FOR THIS BATCH
+
+            loss = model.train_loss(inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph,
+                                    heatmap_tensor=heatmap_tensor,
+                                    x_unf=x_unf,
+                                    map_name=map_name,
+                                    grid_tensor=grid_tensor)
+            return loss
         
         if self.ensemble_method == 'bag':
             losses = []
-            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+            for ens_index in self.num_ensemble: # for each model in ensemble
                 # Run forward pass
                 model = self.node_models_dict[ens_index][node_type]
                 loss = model.train_loss(inputs=x,
@@ -236,7 +270,7 @@ class TrajectronRisk(Trajectron):
         if self.ensemble_method == 'boost':
             losses = []
             gmm_params_prod = None
-            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+            for ens_index in self.num_ensemble: # for each model in ensemble
                 # Run forward pass
                 model = self.node_models_dict[ens_index][node_type]
                 model.prev_gmm_params = gmm_params_prod # tells model's p_y_xz function to use product of prev_gmm and new predicted gmm
@@ -267,7 +301,7 @@ class TrajectronRisk(Trajectron):
             encoded_inputs = []
             kls = []
             infs = []
-            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+            for ens_index in self.num_ensemble: # for each model in ensemble
                 # Run forward pass
                 model = self.node_models_dict[ens_index][node_type]
                 encoded_input, per_example_loss, kl_term, inf_term = model.train_loss_pt1(inputs=x,
@@ -306,7 +340,7 @@ class TrajectronRisk(Trajectron):
             mask = torch.zeros_like(first_history_index)
             losses = []
             encoded_inputs = []
-            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+            for ens_index in self.num_ensemble: # for each model in ensemble
                 # Run forward pass
                 model = self.node_models_dict[ens_index][node_type]
                 encoded_input, per_example_likelihood, kl_term, inf_term = model.train_loss_pt1(
@@ -340,7 +374,7 @@ class TrajectronRisk(Trajectron):
                 return torch.mean(torch.stack(losses)) + self.stacking_model_loss * epoch # incr stack loss weight every epoch
             return torch.mean(torch.stack(losses)) + self.stacking_model_loss
 
-    def eval_loss(self, batch, node_type):
+    def eval_loss(self, batch, node_type, gradboost_index=None):
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
@@ -364,7 +398,7 @@ class TrajectronRisk(Trajectron):
 
         if self.ensemble_method == 'bag':
             nlls = []
-            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+            for ens_index in self.num_ensemble: # for each model in ensemble
                 # Run forward pass
                 model = self.node_models_dict[ens_index][node_type]
                 nll = model.eval_loss(inputs=x,
@@ -384,7 +418,7 @@ class TrajectronRisk(Trajectron):
         if self.ensemble_method == 'boost':
             nll = None
             gmm_params_prod = None
-            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+            for ens_index in self.num_ensemble: # for each model in ensemble
                 # Run forward pass
                 model = self.node_models_dict[ens_index][node_type]
                 model.prev_gmm_params = gmm_params_prod # tells model's p_y_xz function to use product of prev_gmm and new predicted gmm
@@ -402,10 +436,41 @@ class TrajectronRisk(Trajectron):
 
             return nll.cpu().detach().numpy() # use just the nll of the latest model (which uses product of all predicted gmms)
 
+        if self.ensemble_method == 'gradboost':
+            ens_index = gradboost_index
+            model = self.node_models_dict[ens_index][node_type]
+
+            if ens_index > 0:
+                prev_model = self.node_models_dict[ens_index-1][node_type]
+                nll = prev_model.eval_loss(inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph)
+                model.prev_gmm_params = prev_model.gmm_params # sets the prev_gmm_params FOR THIS BATCH
+
+            nll = model.eval_loss(inputs=x,
+                                inputs_st=x_st_t,
+                                first_history_indices=first_history_index,
+                                labels=y,
+                                labels_st=y_st_t,
+                                neighbors=restore(neighbors_data_st),
+                                neighbors_edge_value=restore(neighbors_edge_value),
+                                robot=robot_traj_st_t,
+                                map=map,
+                                prediction_horizon=self.ph)
+
+            return nll.cpu().detach().numpy() # use just the nll of the latest model (which uses product of all predicted gmms)
+
         if self.ensemble_method == 'stack':
             nlls = []
             encoded_inputs = []
-            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+            for ens_index in self.num_ensemble: # for each model in ensemble
                 # Run forward pass
                 model = self.node_models_dict[ens_index][node_type]
                 encoded_input, nll = model.eval_loss_pt1(inputs=x,
@@ -431,7 +496,7 @@ class TrajectronRisk(Trajectron):
             mask = torch.zeros_like(first_history_index)
             nlls = []
             encoded_inputs = []
-            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+            for ens_index in self.num_ensemble: # for each model in ensemble
                 # Run forward pass
                 model = self.node_models_dict[ens_index][node_type]
                 encoded_input, nll = model.eval_loss_pt1(
@@ -458,6 +523,7 @@ class TrajectronRisk(Trajectron):
                 scene,
                 timesteps,
                 ph,
+                last_model_index = None, 
                 num_samples=1,
                 min_future_timesteps=0,
                 min_history_timesteps=1,
@@ -465,7 +531,11 @@ class TrajectronRisk(Trajectron):
                 gmm_mode=False,
                 full_dist=True,
                 all_z_sep=False):
-
+        
+        up_to_model = None
+        if last_model_index:
+            up_to_model = last_model_index + 1
+        num_ensemble_subset = self.num_ensemble[:up_to_model] #should be all the models up to and including last_model_index, if None, all models
         predictions_dict = {}
         for node_type in self.env.NodeType:
             if node_type not in self.pred_state:
@@ -473,7 +543,7 @@ class TrajectronRisk(Trajectron):
             all_models_predictions = []
             encoded_inputs = []
             gmm_params_prod = None
-            for ens_index in NUM_ENSEMBLE: # for each model in ensemble
+            for ens_index in num_ensemble_subset: # for each model in ensemble
 
                 model = self.node_models_dict[ens_index][node_type]
                 model.prev_gmm_params = gmm_params_prod # None for all except boost
@@ -522,7 +592,7 @@ class TrajectronRisk(Trajectron):
                                             all_z_sep=all_z_sep)
                 all_models_predictions.append(predictions)
                 encoded_inputs.append(encoded_input)
-                if self.ensemble_method == 'boost':
+                if (self.ensemble_method == 'boost') or (self.ensemble_method == 'gradboost'):
                     gmm_params_prod = model.gmm_params # model's p_y_xz to use (prev) gmm_params_prod * new predicted gmm
 
             if all_models_predictions == []:
@@ -557,7 +627,7 @@ class TrajectronRisk(Trajectron):
             if node_type not in self.pred_state:
                 continue
 
-            ens_index = NUM_ENSEMBLE[0]
+            ens_index = self.num_ensemble[0]
             model = self.node_models_dict[ens_index][node_type]
 
             # Get Input data for node type and given timesteps
