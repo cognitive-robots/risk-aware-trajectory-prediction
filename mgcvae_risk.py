@@ -251,7 +251,7 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
         ### ----NEW PART ----
         if self.prev_gmm_params:
             curr_gmm_params = (log_pis, mus, log_sigmas, corrs)
-            combined_gmm_params = add_gmm_params(self.prev_gmm_params, curr_gmm_params)
+            combined_gmm_params = multiply_gmms(self.prev_gmm_params, curr_gmm_params)
             (log_pis, mus, log_sigmas, corrs) = combined_gmm_params
 
         self.gmm_params = (log_pis.detach(), mus.detach(), log_sigmas.detach(), corrs.detach())

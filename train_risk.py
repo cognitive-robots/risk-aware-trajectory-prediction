@@ -326,18 +326,19 @@ def main():
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
 
-    per_trainset_loop = [None]
-    if args.ensemble_method == 'gradboost':
-        per_trainset_loop = NUM_ENSEMBLE
-    for gradboost_index in per_trainset_loop:
-        label = ''
-        if gradboost_index:
-            label = gradboost_index # for labeling wandb recordings
-        #################################
-        #           TRAINING            #
-        #################################
-        curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
-        for epoch in range(1, args.train_epochs + 1):
+    #################################
+    #           TRAINING            #
+    #################################
+    curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
+    for epoch in range(1, args.train_epochs + 1):
+        per_trainset_loop = [None]
+        if args.ensemble_method == 'gradboost':
+            per_trainset_loop = NUM_ENSEMBLE
+        for gradboost_index in per_trainset_loop:
+            label = ''
+            if gradboost_index:
+                label = gradboost_index # for labeling wandb recordings
+
             wandb.log({"epoch{}".format(label): epoch})
             model_registrar.to(args.device)
             train_dataset.augment = args.augment
