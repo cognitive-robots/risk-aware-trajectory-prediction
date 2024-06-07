@@ -173,4 +173,6 @@ parser.add_argument('--no_stationary',
                     action='store_true')
 parser.add_argument('--location_risk',
                     action='store_true')
+parser.add_argument('--bmc',
+                    action='store_true')
 args = parser.parse_args()

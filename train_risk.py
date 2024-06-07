@@ -23,6 +23,8 @@ from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
 from model.dataset import collate
 from tensorboardX import SummaryWriter
+from bmc_loss import BMCLoss
+
 # torch.autograd.set_detect_anomaly(True)
 
 if not torch.cuda.is_available() or args.device == 'cpu':
@@ -253,11 +255,18 @@ def main():
 
     optimizer = dict()
     lr_scheduler = dict()
+    criterion = dict()
     for node_type in train_env.NodeType:
         if node_type not in hyperparams['pred_state']:
             continue
         optimizer[node_type] = optim.Adam([{'params': model_registrar.get_all_but_name_match('map_encoder').parameters()},
                                            {'params': model_registrar.get_name_match('map_encoder').parameters(), 'lr':0.0008}], lr=hyperparams['learning_rate'])
+        if args.bmc:
+            sigma_lr = 1e-2
+            init_noise_sigma = 1
+            criterion[node_type] = BMCLoss(init_noise_sigma, args.device)
+            optimizer[node_type].add_param_group({'params': criterion[node_type].noise_sigma, 'lr': sigma_lr, 'name': 'noise_sigma'})
+
         # Set Learning Rate
         if hyperparams['learning_rate_style'] == 'const':
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type], gamma=1.0)
@@ -281,7 +290,7 @@ def main():
                 optimizer[node_type].zero_grad()
                 # -------- ADDED HEATMAP_TENSOR -------
                 train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor, 
-                    loc_risk=args.location_risk, no_stat=args.no_stationary)
+                    loc_risk=args.location_risk, no_stat=args.no_stationary, bmc=criterion)
                 # -------------------------------------
                 pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
                 train_loss.backward()
