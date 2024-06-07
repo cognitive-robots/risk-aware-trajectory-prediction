@@ -1,3 +1,5 @@
+import os
+import json
 import torch
 import numpy as np
 import collections.abc
@@ -7,6 +9,45 @@ import sys
 sys.path.append("./Trajectron-plus-plus/trajectron")
 from model.dataset.preprocessing import collate, get_relative_robot_traj
 from model.dataset.dataset import EnvironmentDataset, NodeTypeDataset
+from model.model_registrar import ModelRegistrar
+from model.trajectron import Trajectron
+
+baseline_model = 'models/int_ee_me/'
+checkpoint = 12
+device = 'cuda:0'
+
+def loss_based_multipler(nll):
+    if nll > 5:
+        return 20
+
+    if nll > 3.8:
+        return 17
+
+    if nll > 2.4:
+        return 13
+
+    if nll > 1.5:
+        return 10
+
+    if nll > 0:
+        return 5
+
+    if nll > -3.15:
+        return 2
+
+    return 1
+
+def load_model(model_dir, env, ts=100):
+    model_registrar = ModelRegistrar(model_dir, device)
+    model_registrar.load_models(ts)
+    with open(os.path.join(model_dir, 'config.json'), 'r') as config_json:
+        hyperparams = json.load(config_json)
+
+    trajectron = Trajectron(model_registrar, hyperparams, None, device)
+
+    trajectron.set_environment(env)
+    trajectron.set_annealing_params()
+    return trajectron, hyperparams
 
 class EnvironmentDatasetRisk(EnvironmentDataset):
     def __init__(self, env, state, pred_state, node_freq_mult, scene_freq_mult, hyperparams, **kwargs):
@@ -25,6 +66,46 @@ class EnvironmentDatasetRisk(EnvironmentDataset):
                                                            scene_freq_mult, hyperparams, **kwargs))
 
 class NodeTypeDatasetRisk(NodeTypeDataset):
+    def __init__(self, env, node_type, state, pred_state, node_freq_mult,
+                 scene_freq_mult, hyperparams, augment=False, **kwargs):
+        self.env = env
+        self.state = state
+        self.pred_state = pred_state
+        self.hyperparams = hyperparams
+        self.max_ht = self.hyperparams['maximum_history_length']
+        self.max_ft = kwargs['min_future_timesteps']
+
+        self.augment = augment
+
+        self.node_type = node_type
+        self.edge_types = [edge_type for edge_type in env.get_edge_types() if edge_type[0] is node_type]
+        self.eval_stg, _ = load_model(baseline_model, env, ts=checkpoint)
+        self.index = self.index_env(node_freq_mult, scene_freq_mult, **kwargs)
+        self.len = len(self.index)
+
+    def baseline_model_loss_for_example(self, scene, t, node):
+        example = get_node_timestep_data(self.env, scene, t, node, self.state, self.pred_state,
+                                      self.edge_types, self.max_ht, self.max_ft, self.hyperparams)
+        batch = collate([example[:9]])
+        nll = self.eval_stg.eval_loss(batch, self.node_type)
+        return nll
+
+    def index_env(self, node_freq_mult, scene_freq_mult, **kwargs):
+        index = list()
+        for scene in self.env.scenes:
+            present_node_dict = scene.present_nodes(np.arange(0, scene.timesteps), type=self.node_type, **kwargs)
+            for t, nodes in present_node_dict.items():
+                for node in nodes:
+                    # here, calculate, for scene, t, node, what's the error using int_ee_me
+                    nll = self.baseline_model_loss_for_example(scene, t, node)
+                    multiplier = loss_based_multipler(nll)
+                    index += [(scene, t, node)] *\
+                             (scene.frequency_multiplier if scene_freq_mult else 1) *\
+                             (node.frequency_multiplier if node_freq_mult else 1) *\
+                             multiplier
+                            # here, use new multiplicative factor
+        return index
+
     def __getitem__(self, i):
         (scene, t, node) = self.index[i]
 

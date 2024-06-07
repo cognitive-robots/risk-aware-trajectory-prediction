@@ -37,7 +37,7 @@ else:
     args.device = torch.device(args.device)
 
 if args.eval_device is None:
-    args.eval_device = torch.device('cpu')
+    args.eval_device = torch.device('cuda:0')
 
 # This is needed for memory pinning using a DataLoader (otherwise memory is pinned to cuda:0 by default)
 torch.cuda.set_device(args.device)
@@ -305,6 +305,7 @@ def main():
         if args.eval_every is not None or args.vis_every is not None:
             eval_trajectron.set_curr_iter(epoch)
 
+        args.vis_every = None
         #################################
         #        VISUALIZATION          #
         #################################
@@ -409,58 +410,58 @@ def main():
                                                 f"{node_type}/eval_loss",
                                                 epoch)
 
-                # Predict batch timesteps for evaluation dataset evaluation
-                eval_batch_errors = []
-                for scene in tqdm(eval_scenes, desc='Sample Evaluation', ncols=80):
-                    timesteps = scene.sample_timesteps(args.eval_batch_size)
+                # # Predict batch timesteps for evaluation dataset evaluation
+                # eval_batch_errors = []
+                # for scene in tqdm(eval_scenes, desc='Sample Evaluation', ncols=80):
+                #     timesteps = scene.sample_timesteps(args.eval_batch_size)
 
-                    predictions = eval_trajectron.predict(scene,
-                                                          timesteps,
-                                                          ph,
-                                                          num_samples=50,
-                                                          min_future_timesteps=ph,
-                                                          full_dist=False)
+                #     predictions = eval_trajectron.predict(scene,
+                #                                           timesteps,
+                #                                           ph,
+                #                                           num_samples=50,
+                #                                           min_future_timesteps=ph,
+                #                                           full_dist=False)
 
-                    eval_batch_errors.append(evaluation.compute_batch_statistics(predictions,
-                                                                                 scene.dt,
-                                                                                 max_hl=max_hl,
-                                                                                 ph=ph,
-                                                                                 node_type_enum=eval_env.NodeType,
-                                                                                 map=scene.map))
+                #     eval_batch_errors.append(evaluation.compute_batch_statistics(predictions,
+                #                                                                  scene.dt,
+                #                                                                  max_hl=max_hl,
+                #                                                                  ph=ph,
+                #                                                                  node_type_enum=eval_env.NodeType,
+                #                                                                  map=scene.map))
 
-                evaluation.log_batch_errors(eval_batch_errors,
-                                            log_writer,
-                                            'eval',
-                                            epoch,
-                                            bar_plot=['kde'],
-                                            box_plot=['ade', 'fde'])
+                # evaluation.log_batch_errors(eval_batch_errors,
+                #                             log_writer,
+                #                             'eval',
+                #                             epoch,
+                #                             bar_plot=['kde'],
+                #                             box_plot=['ade', 'fde'])
 
-                # Predict maximum likelihood batch timesteps for evaluation dataset evaluation
-                eval_batch_errors_ml = []
-                for scene in tqdm(eval_scenes, desc='MM Evaluation', ncols=80):
-                    timesteps = scene.sample_timesteps(scene.timesteps)
+                # # Predict maximum likelihood batch timesteps for evaluation dataset evaluation
+                # eval_batch_errors_ml = []
+                # for scene in tqdm(eval_scenes, desc='MM Evaluation', ncols=80):
+                #     timesteps = scene.sample_timesteps(scene.timesteps)
 
-                    predictions = eval_trajectron.predict(scene,
-                                                          timesteps,
-                                                          ph,
-                                                          num_samples=1,
-                                                          min_future_timesteps=ph,
-                                                          z_mode=True,
-                                                          gmm_mode=True,
-                                                          full_dist=False)
+                #     predictions = eval_trajectron.predict(scene,
+                #                                           timesteps,
+                #                                           ph,
+                #                                           num_samples=1,
+                #                                           min_future_timesteps=ph,
+                #                                           z_mode=True,
+                #                                           gmm_mode=True,
+                #                                           full_dist=False)
 
-                    eval_batch_errors_ml.append(evaluation.compute_batch_statistics(predictions,
-                                                                                    scene.dt,
-                                                                                    max_hl=max_hl,
-                                                                                    ph=ph,
-                                                                                    map=scene.map,
-                                                                                    node_type_enum=eval_env.NodeType,
-                                                                                    kde=False))
+                #     eval_batch_errors_ml.append(evaluation.compute_batch_statistics(predictions,
+                #                                                                     scene.dt,
+                #                                                                     max_hl=max_hl,
+                #                                                                     ph=ph,
+                #                                                                     map=scene.map,
+                #                                                                     node_type_enum=eval_env.NodeType,
+                #                                                                     kde=False))
 
-                evaluation.log_batch_errors(eval_batch_errors_ml,
-                                            log_writer,
-                                            'eval/ml',
-                                            epoch)
+                # evaluation.log_batch_errors(eval_batch_errors_ml,
+                #                             log_writer,
+                #                             'eval/ml',
+                #                             epoch)
 
         if args.save_every is not None and args.debug is False and epoch % args.save_every == 0:
             model_registrar.save_models(epoch)
