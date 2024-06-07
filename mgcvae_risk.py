@@ -80,7 +80,7 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
 
         if bmc:
             lamda = 0.5
-            loss = (1 - lamda) * loss + lamda * bmc(y, labels)
+            loss = (1 - lamda) * loss + lamda * bmc[self.node_type](y, labels)
 
         if self.hyperparams['log_histograms'] and self.log_writer is not None:
             self.log_writer.add_histogram('%s/%s' % (str(self.node_type), 'log_p_y_xz'),
