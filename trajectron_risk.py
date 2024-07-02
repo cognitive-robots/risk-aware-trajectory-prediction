@@ -8,6 +8,8 @@ from mgcvae_risk import MultimodalGenerativeCVAERisk, train_loss_pt2, eval_loss_
 from preprocessing_risk import get_timesteps_data
 import torch.nn as nn
 import wandb
+from skimage.util import random_noise
+
 
 STACKING_CHOOSE_ONE = False # for stack only
 INCR_ETA = False
@@ -16,11 +18,10 @@ INCR_ETA = False
 STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 stacking_model_eta = 0.1 # for stack or stackboost
 
-def create_stacking_model(env, x_size, device, num_ensemble):
-    num_models = len(num_ensemble)
+def create_stacking_model(env, x_size, device, input_multiplier, num_models):
     models = {}
     for node_type in env.NodeType:
-        input_layer_size = x_size[node_type]*num_models
+        input_layer_size = x_size[node_type]*input_multiplier
         output_layer_size = num_models
         # hidden_layer_size =  int((input_layer_size + output_layer_size) / 2)
         hidden_layer_size1 = int(2/3 * input_layer_size + output_layer_size)
@@ -122,7 +123,7 @@ class TrajectronRisk(Trajectron):
 
     def clusterstacking(self, target, encoded_inputs, node_type, predict=False): # losses is either losses or predictions
         # device = self.agg_models[self.env.NodeType[0]][0].weight.device
-        model_input = torch.cat(tuple(encoded_inputs), 1).to(self.device)
+        model_input = encoded_inputs.to(self.device)
         model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
         model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
         model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
@@ -205,6 +206,7 @@ class TrajectronRisk(Trajectron):
         if robot_traj_st_t is not None:
             robot_traj_st_t = robot_traj_st_t.to(self.device)
         if type(map) == torch.Tensor:
+            map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise
             map = map.to(self.device)
 
         if self.ensemble_method == 'gradboost':
@@ -331,6 +333,39 @@ class TrajectronRisk(Trajectron):
             return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf)
 
         if self.ensemble_method == 'clusterstack':
+            model = self.node_models_dict[0][node_type]
+            z, kl, input_embedding = model.train_loss_encode(
+                                    inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph,
+                                    heatmap_tensor=heatmap_tensor,
+                                    x_unf=x_unf,
+                                    map_name=map_name,
+                                    grid_tensor=grid_tensor)
+            # cluster the z into num_models clusters
+            # run stacking_classifier on z
+            per_example_likelihoods = []
+            for ens_index in self.num_ensemble: # for each model in ensemble
+                # Run decoder
+                model = self.node_models_dict[ens_index][node_type]            
+                per_example_likelihood, kl_term, inf_term = model.train_loss_decode_pt1(
+                                            z, kl, input_embedding, 
+                                            labels=y, 
+                                            prediction_horizon=self.ph)
+                per_example_likelihoods.append(per_example_likelihood)
+            
+
+
+
+
+
             batch_size = first_history_index.shape[0]
             last_model_index = self.num_models - 1
             ind_k = batch_size
