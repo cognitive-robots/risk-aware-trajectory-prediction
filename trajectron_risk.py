@@ -10,13 +10,11 @@ import torch.nn as nn
 import wandb
 
 STACKING_CHOOSE_ONE = False # for stack only
-STACKBOOST_PERCENTAGE = 0.5 # for stackboost
-stacking_model_eta = 0.1 # for stack or stackboost
 INCR_ETA = False
 
 # if we're sweeping over these, these are ignored
-# STACKBOOST_PERCENTAGE = 0.5 # for stackboost
-# stacking_model_eta = 0.1 # for stack or stackboost
+STACKBOOST_PERCENTAGE = 0.5 # for stackboost
+stacking_model_eta = 0.1 # for stack or stackboost
 
 def create_stacking_model(env, x_size, device, num_ensemble):
     num_models = len(num_ensemble)
@@ -122,7 +120,7 @@ class TrajectronRisk(Trajectron):
         normalized_weighted_average = torch.sum(weighted_losses, 1) / torch.sum(model_output, 1)
         return normalized_weighted_average  
 
-    def stackboosting(self, target, encoded_inputs, node_type, predict=False): # losses is either losses or predictions
+    def clusterstacking(self, target, encoded_inputs, node_type, predict=False): # losses is either losses or predictions
         # device = self.agg_models[self.env.NodeType[0]][0].weight.device
         model_input = torch.cat(tuple(encoded_inputs), 1).to(self.device)
         model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
@@ -160,10 +158,9 @@ class TrajectronRisk(Trajectron):
             self.aggregation_func = self.stacking
             self.stack_eta = eta
 
-        if ensemble_method == 'stackboost':
+        if ensemble_method == 'clusterstack':
             self.agg_models = agg_models
-            self.aggregation_func = self.stackboosting
-            self.stackboost_percentage = percentage
+            self.aggregation_func = self.clusterstacking
             self.stack_eta = eta
 
     def set_curr_iter(self, curr_iter):
@@ -333,7 +330,7 @@ class TrajectronRisk(Trajectron):
                 return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf) + self.stacking_model_loss # add stack choosing model loss
             return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf)
 
-        if self.ensemble_method == 'stackboost':
+        if self.ensemble_method == 'clusterstack':
             batch_size = first_history_index.shape[0]
             last_model_index = self.num_models - 1
             ind_k = batch_size
@@ -360,7 +357,7 @@ class TrajectronRisk(Trajectron):
                                         grid_tensor=grid_tensor)
                 encoded_inputs.append(encoded_input)
                 per_example_likelihood[mask != ens_index] = float('inf') # ignore examples belonging to prev models (since we're getting min k)
-                ind_k = int(self.stackboost_percentage * ind_k)
+                ind_k = #### TODO CLUSTERING ####
                 inds = torch.topk(per_example_likelihood, ind_k, largest=False, sorted=True) # get min k (worst=> smallest likelihood)
                 if ens_index != last_model_index: # if no more models, leave leftovers to last model
                     mask[inds.indices] += 1 # leave the ones it got wrong to the next model
@@ -489,7 +486,7 @@ class TrajectronRisk(Trajectron):
             aggregated = self.aggregation_func(nlls, encoded_inputs, node_type)
             return eval_loss_pt2(aggregated).cpu().detach().numpy()
             
-        if self.ensemble_method == 'stackboost':
+        if self.ensemble_method == 'clusterstack':
             batch_size = first_history_index.shape[0]
             last_model_index = self.num_models - 1
             ind_k = batch_size
