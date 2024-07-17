@@ -106,7 +106,7 @@ class TrajectronRisk(Trajectron):
                 self.stacking_model_loss = loss(softmax, target) * self.stack_eta
 
             inds = torch.argmax(model_output, dim=1) # return predictions of most probably correct model
-            return losses_stacked[inds][0]
+            return losses_stacked[inds, range(len(inds))]
         
         if predict:
             predictions = losses # just indicating that if predict is true, the losses are actually predictions
