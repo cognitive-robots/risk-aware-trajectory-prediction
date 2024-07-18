@@ -468,7 +468,8 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
                 z_mode=False,
                 gmm_mode=False,
                 full_dist=True,
-                all_z_sep=False):
+                all_z_sep=False,
+                encoder_output = None):
         """
         Predicts the future of a batch of nodes.
 
@@ -489,24 +490,27 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
         :return:
         """
         mode = ModeKeys.PREDICT
+        if encoder_output is None:
+            x, x_nr_t, _, y_r, _, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                    inputs=inputs,
+                                                                    inputs_st=inputs_st,
+                                                                    labels=None,
+                                                                    labels_st=None,
+                                                                    first_history_indices=first_history_indices,
+                                                                    neighbors=neighbors,
+                                                                    neighbors_edge_value=neighbors_edge_value,
+                                                                    robot=robot,
+                                                                    map=map)
+            self.latent.p_dist = self.p_z_x(mode, x)
+            z, num_samples, num_components = self.latent.sample_p(num_samples,
+                                                                mode,
+                                                                most_likely_z=z_mode,
+                                                                full_dist=full_dist,
+                                                                all_z_sep=all_z_sep)
+            encoder_output = (x, x_nr_t, y_r, n_s_t0, num_samples, num_components, z)
+        else:
+            (x, x_nr_t, y_r, n_s_t0, num_samples, num_components, z) = encoder_output
 
-        x, x_nr_t, _, y_r, _, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
-                                                                   inputs=inputs,
-                                                                   inputs_st=inputs_st,
-                                                                   labels=None,
-                                                                   labels_st=None,
-                                                                   first_history_indices=first_history_indices,
-                                                                   neighbors=neighbors,
-                                                                   neighbors_edge_value=neighbors_edge_value,
-                                                                   robot=robot,
-                                                                   map=map)
-
-        self.latent.p_dist = self.p_z_x(mode, x)
-        z, num_samples, num_components = self.latent.sample_p(num_samples,
-                                                              mode,
-                                                              most_likely_z=z_mode,
-                                                              full_dist=full_dist,
-                                                              all_z_sep=all_z_sep)
 
         _, our_sampled_future = self.p_y_xz(mode, x, x_nr_t, y_r, n_s_t0, z,
                                             prediction_horizon,
@@ -514,7 +518,7 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
                                             num_components,
                                             gmm_mode)
 
-        return x, our_sampled_future
+        return encoder_output, our_sampled_future
 
     def train_loss_pt1(self,
                    inputs,
@@ -637,6 +641,142 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
         num_components = self.hyperparams['N'] * self.hyperparams['K']
         ### Importance sampled NLL estimate
         z, _ = self.encoder(mode, x, y_e)  # [k_eval, nbs, N*K]
+        z = self.latent.sample_p(1, mode, full_dist=True)
+        y_dist, _ = self.p_y_xz(ModeKeys.PREDICT, x, x_nr_t, y_r, n_s_t0, z,
+                                prediction_horizon, num_samples=1, num_components=num_components)
+        # We use unstandardized labels to compute the loss
+        log_p_yt_xz = torch.clamp(y_dist.log_prob(labels), max=self.hyperparams['log_p_yt_xz_max'])
+        log_p_y_xz = torch.sum(log_p_yt_xz, dim=2)
+        log_p_y_xz_mean = torch.mean(log_p_y_xz, dim=0)  # [nbs]
+        return x, log_p_y_xz_mean
+    
+
+    def train_loss_encode(self,
+                   inputs,
+                   inputs_st,
+                   first_history_indices,
+                   labels,
+                   labels_st,
+                   neighbors,
+                   neighbors_edge_value,
+                   robot,
+                   map,
+                   prediction_horizon,
+                   # -------------- ADDED ----------------
+                   heatmap_tensor,
+                   x_unf,
+                   map_name,
+                   grid_tensor
+                   # -------------------------------------                   
+                   ) -> torch.Tensor:
+        """
+        Calculates the training loss for a batch.
+
+        :param inputs: Input tensor including the state for each agent over time [bs, t, state].
+        :param inputs_st: Standardized input tensor.
+        :param first_history_indices: First timestep (index) in scene for which data is available for a node [bs]
+        :param labels: Label tensor including the label output for each agent over time [bs, t, pred_state].
+        :param labels_st: Standardized label tensor.
+        :param neighbors: Preprocessed dict (indexed by edge type) of list of neighbor states over time.
+                            [[bs, t, neighbor state]]
+        :param neighbors_edge_value: Preprocessed edge values for all neighbor nodes [[N]]
+        :param robot: Standardized robot state over time. [bs, t, robot_state]
+        :param map: Tensor of Map information. [bs, channels, x, y]
+        :param prediction_horizon: Number of prediction timesteps.
+        :return: Scalar tensor -> nll loss
+        """
+        mode = ModeKeys.TRAIN
+
+        x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                     inputs=inputs,
+                                                                     inputs_st=inputs_st,
+                                                                     labels=labels,
+                                                                     labels_st=labels_st,
+                                                                     first_history_indices=first_history_indices,
+                                                                     neighbors=neighbors,
+                                                                     neighbors_edge_value=neighbors_edge_value,
+                                                                     robot=robot,
+                                                                     map=map)
+        z, kl = self.encoder(mode, x, y_e)
+        return z, kl, (x, x_nr_t, y_e, y_r, y, n_s_t0), (self.latent, self.dynamic)
+    
+    def train_loss_decode_pt1(self, z, kl, input_embedding, dists, labels, prediction_horizon):
+        mode = ModeKeys.TRAIN        
+        (latent, dynamic) = dists
+        self.latent = latent
+        self.dynamic = dynamic
+
+        (x, x_nr_t, y_e, y_r, y, n_s_t0) = input_embedding
+        
+        log_p_y_xz = self.decoder(mode, x, x_nr_t, y, y_r, n_s_t0, z,
+                                  labels,  # Loss is calculated on unstandardized label
+                                  prediction_horizon,
+                                  self.hyperparams['k'])
+
+
+        log_p_y_xz_mean = torch.mean(log_p_y_xz, dim=0)  # [nbs]
+        log_likelihood = torch.mean(log_p_y_xz_mean)
+
+        mutual_inf_q = mutual_inf_mc(self.latent.q_dist)
+        mutual_inf_p = mutual_inf_mc(self.latent.p_dist)
+            
+        kl_term = self.kl_weight * kl
+        inf_term = 1. * mutual_inf_p
+        return log_p_y_xz_mean, kl_term, inf_term
+    
+    def eval_loss_encode(self,
+                  inputs,
+                  inputs_st,
+                  first_history_indices,
+                  labels,
+                  labels_st,
+                  neighbors,
+                  neighbors_edge_value,
+                  robot,
+                  map,
+                  prediction_horizon) -> torch.Tensor:
+        """
+        Calculates the evaluation loss for a batch.
+
+        :param inputs: Input tensor including the state for each agent over time [bs, t, state].
+        :param inputs_st: Standardized input tensor.
+        :param first_history_indices: First timestep (index) in scene for which data is available for a node [bs]
+        :param labels: Label tensor including the label output for each agent over time [bs, t, pred_state].
+        :param labels_st: Standardized label tensor.
+        :param neighbors: Preprocessed dict (indexed by edge type) of list of neighbor states over time.
+                            [[bs, t, neighbor state]]
+        :param neighbors_edge_value: Preprocessed edge values for all neighbor nodes [[N]]
+        :param robot: Standardized robot state over time. [bs, t, robot_state]
+        :param map: Tensor of Map information. [bs, channels, x, y]
+        :param prediction_horizon: Number of prediction timesteps.
+        :return: tuple(nll_q_is, nll_p, nll_exact, nll_sampled)
+        """
+
+        mode = ModeKeys.EVAL
+
+        x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                     inputs=inputs,
+                                                                     inputs_st=inputs_st,
+                                                                     labels=labels,
+                                                                     labels_st=labels_st,
+                                                                     first_history_indices=first_history_indices,
+                                                                     neighbors=neighbors,
+                                                                     neighbors_edge_value=neighbors_edge_value,
+                                                                     robot=robot,
+                                                                     map=map)
+
+        ### Importance sampled NLL estimate
+        z, _ = self.encoder(mode, x, y_e)  # [k_eval, nbs, N*K]
+        return z, (x, x_nr_t, y_e, y_r, y, n_s_t0), (self.latent, self.dynamic)
+
+    def eval_loss_decode_pt1(self, z, input_embedding, dists, labels, prediction_horizon):
+        (latent, dynamic) = dists
+        self.latent = latent
+        self.dynamic = dynamic
+        mode = ModeKeys.EVAL
+        (x, x_nr_t, y_e, y_r, y, n_s_t0) = input_embedding
+        num_components = self.hyperparams['N'] * self.hyperparams['K']
+
         z = self.latent.sample_p(1, mode, full_dist=True)
         y_dist, _ = self.p_y_xz(ModeKeys.PREDICT, x, x_nr_t, y_r, n_s_t0, z,
                                 prediction_horizon, num_samples=1, num_components=num_components)

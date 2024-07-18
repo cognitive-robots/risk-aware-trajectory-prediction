@@ -27,7 +27,7 @@ import wandb
 wandb.login()
 # torch.autograd.set_detect_anomaly(True)
 args.vis_every = None # not using it atm
-NUM_ENSEMBLE = [0, 1]
+NUM_ENSEMBLE = [0, 1, 2]
 
 # Define sweep config
 # sweep_configuration = {
@@ -293,7 +293,14 @@ def main():
     # create aggregation model for stacking
     aggregation_model = None
     if 'stack' in args.ensemble_method:
-        aggregation_model = create_stacking_model(train_env, trajectron.get_x_size(), args.device, NUM_ENSEMBLE)
+        num_models = len(NUM_ENSEMBLE)
+        x_size = trajectron.x_size 
+        z_dim = trajectron.z_dim
+        zx_dim = trajectron.zx_dim
+        input_multiplier = 1 if 'cluster' in args.ensemble_method else num_models
+        input_dims = zx_dim if 'cluster' in args.ensemble_method else x_size
+        aggregation_model = create_stacking_model(train_env, input_dims, 
+                                                  args.device, input_multiplier, num_models)
 
     trajectron.set_aggregation(args.ensemble_method,
             agg_models=aggregation_model, percentage=percentage, eta=eta)
@@ -349,9 +356,9 @@ def main():
                 pbar = tqdm(data_loader, ncols=80)
                 # REMOVE_LATER = 0
                 for batch in pbar:
-                    # if REMOVE_LATER > 0:
+                    # if REMOVE_LATER > 3:
                     #     break;
-                    # REMOVE_LATER = 1
+                    # REMOVE_LATER += 1
                     trajectron.set_curr_iter(curr_iter)
                     trajectron.step_annealers(node_type)
                     optimizer[node_type].zero_grad()
@@ -485,7 +492,7 @@ def main():
                         pbar = tqdm(data_loader, ncols=80)
                         # REMOVE_LATER = 0
                         for batch in pbar:
-                            # if REMOVE_LATER > 1:
+                            # if REMOVE_LATER > 3:
                             #     break;
                             # REMOVE_LATER += 1                        
                             eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type, gradboost_index)
@@ -508,7 +515,7 @@ def main():
                     eval_batch_errors = []
                     # REMOVE_LATER = 0
                     for scene in tqdm(eval_scenes, desc='Sample Evaluation', ncols=80):
-                        # if REMOVE_LATER > 1:
+                        # if REMOVE_LATER > 3:
                         #     break;
                         # REMOVE_LATER += 1   
                         timesteps = scene.sample_timesteps(args.eval_batch_size)
@@ -549,7 +556,7 @@ def main():
                     eval_batch_errors_ml = []
                     # REMOVE_LATER = 0
                     for scene in tqdm(eval_scenes, desc='MM Evaluation', ncols=80):
-                        # if REMOVE_LATER > 1:
+                        # if REMOVE_LATER > 3:
                         #     break;
                         # REMOVE_LATER += 1   
                         timesteps = scene.sample_timesteps(scene.timesteps)

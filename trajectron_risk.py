@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from scipy.cluster.vq import vq, whiten, kmeans2
 import sys
 sys.path.append("Trajectron-plus-plus/trajectron/")
 from model.trajectron import Trajectron 
@@ -18,27 +19,18 @@ INCR_ETA = False
 STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 stacking_model_eta = 0.1 # for stack or stackboost
 
-def create_stacking_model(env, x_size, device, input_multiplier, num_models):
+def create_stacking_model(env, input_dims, device, input_multiplier, num_models):
     models = {}
     for node_type in env.NodeType:
-        input_layer_size = x_size[node_type]*input_multiplier
+        input_layer_size = input_dims[node_type]*input_multiplier
         output_layer_size = num_models
-        # hidden_layer_size =  int((input_layer_size + output_layer_size) / 2)
-        hidden_layer_size1 = int(2/3 * input_layer_size + output_layer_size)
-        # hidden_layer_size2 = int(2/3 * hidden_layer_size1 + output_layer_size)
-        # hidden_layer_size3 = int(2/3 * hidden_layer_size2 + output_layer_size)
-        # hidden_layer_size4 = int(2/3 * hidden_layer_size3 + output_layer_size)
+        hidden_layer_size =  input_layer_size
         models[node_type] = nn.Sequential(
-                                nn.Linear(input_layer_size, hidden_layer_size1).to(device),
+                                nn.Linear(input_layer_size, hidden_layer_size).to(device),
+                                nn.BatchNorm1d(hidden_layer_size).to(device),
                                 nn.ReLU(),
-                                nn.Linear(hidden_layer_size1, output_layer_size).to(device),
-                                # nn.ReLU(),
-                                # nn.Linear(hidden_layer_size, output_layer_size).to(device),
-                                # nn.ReLU(),
-                                # nn.Linear(hidden_layer_size, hidden_layer_size).to(device),
-                                # nn.ReLU(),
-                                # nn.Linear(hidden_layer_size, output_layer_size).to(device),
-                                nn.ReLU())
+                                nn.Linear(hidden_layer_size, output_layer_size).to(device)
+                                )
     return models
 
 def mask_neighbors(neighbors, cond): #cond is an if condition like (mask == ens_index)
@@ -59,25 +51,31 @@ class TrajectronRisk(Trajectron):
         edge_types = env.get_edge_types()
 
         x_size = {}
+        z_dim = {}
+        zx = {}
+        self.clusters = {}
         for ens_index in num_ensemble:
             self.node_models_dict[ens_index] = {}
             for node_type in env.NodeType:
                 # Only add a Model for NodeTypes we want to predict
                 if node_type in self.pred_state.keys():
-                    self.node_models_dict[ens_index][node_type] = MultimodalGenerativeCVAERisk(env,
-                                                                                node_type,
-                                                                                self.model_registrar,
-                                                                                self.hyperparams,
-                                                                                self.device,
-                                                                                edge_types,
-                                                                                log_writer=self.log_writer)
-                    self.node_models_dict[ens_index][node_type].prev_gmm_params = None # only needed for boosting
+                    self.clusters[node_type] = None
+                    model_instance = MultimodalGenerativeCVAERisk(env,
+                                                        node_type,
+                                                        self.model_registrar,
+                                                        self.hyperparams,
+                                                        self.device,
+                                                        edge_types,
+                                                        log_writer=self.log_writer)
+                    model_instance.prev_gmm_params = None # only needed for boosting
+                    self.node_models_dict[ens_index][node_type] = model_instance
                     if node_type not in x_size.keys():
-                        x_size[node_type] = self.node_models_dict[ens_index][node_type].x_size
+                        x_size[node_type] = model_instance.x_size
+                        z_dim[node_type] = model_instance.latent.z_dim
+                        zx[node_type] = model_instance.latent.z_dim + model_instance.x_size
         self.x_size = x_size
-
-    def get_x_size(self):
-        return self.x_size
+        self.z_dim = z_dim
+        self.zx_dim = zx
 
     def bagging(self, losses, encoded_inputs=None, node_type=None, predict=False): # losses is either losses or predictions
         return torch.mean(torch.stack(losses), dim=0)
@@ -105,7 +103,7 @@ class TrajectronRisk(Trajectron):
                 self.stacking_model_loss = loss(softmax, target) * self.stack_eta
 
             inds = torch.argmax(model_output, dim=1) # return predictions of most probably correct model
-            return losses_stacked[inds][0]
+            return losses_stacked[inds, range(len(inds))]
         
         if predict:
             predictions = losses # just indicating that if predict is true, the losses are actually predictions
@@ -121,21 +119,30 @@ class TrajectronRisk(Trajectron):
         normalized_weighted_average = torch.sum(weighted_losses, 1) / torch.sum(model_output, 1)
         return normalized_weighted_average  
 
-    def clusterstacking(self, target, encoded_inputs, node_type, predict=False): # losses is either losses or predictions
+    def clusterstacking(self, target, encoded_inputs, node_type, eval=False, predict=False): # losses is either losses or predictions
         # device = self.agg_models[self.env.NodeType[0]][0].weight.device
         model_input = encoded_inputs.to(self.device)
         model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
         model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
         model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
+        if eval:
+            # if features are zx not x:
+            inds_per_mode = model_inference.reshape(-1, target[0].shape[0]).transpose(0,1)
+            inds = torch.mode(inds_per_mode).values
+            losses_stacked = torch.stack(target)
+            return losses_stacked[inds, range(len(inds))] # return predictions of most probably correct model
         if predict:
-            predictions = target # just indicating that if predict is true, the target is actually predictions
-            if self.num_models == 1:
-                return predictions[0]
-            agg_preds = torch.zeros(predictions[0].shape).to(self.device)
-            for i in range(model_output.shape[0]): # per example in batch
-                agg_preds[:,i,:,:] = predictions[model_inference[i]][:,i,:,:] # ith example gets predictions from chosen ens at i
-            return agg_preds
+            # if features are zx not x:
+            predictions = target
+            inds_per_sample = model_inference.reshape(-1, target[0].shape[1])
+            ret = torch.zeros(predictions[0].shape).to(self.device)
+            for i in range(inds_per_sample.shape[0]):
+                for j in range(inds_per_sample.shape[1]): # per example in batch
+                    ind = inds_per_sample[i, j]
+                    ret[i,j,:,:] = predictions[ind][i,j,:,:]
+            return ret 
         loss = nn.CrossEntropyLoss()
+
         self.stacking_model_loss = loss(model_output, target.to(self.device)) * self.stack_eta
         return model_inference
 
@@ -206,7 +213,7 @@ class TrajectronRisk(Trajectron):
         if robot_traj_st_t is not None:
             robot_traj_st_t = robot_traj_st_t.to(self.device)
         if type(map) == torch.Tensor:
-            map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise
+            map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise (randgaussmapnoise)
             map = map.to(self.device)
 
         if self.ensemble_method == 'gradboost':
@@ -333,8 +340,11 @@ class TrajectronRisk(Trajectron):
             return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf)
 
         if self.ensemble_method == 'clusterstack':
-            model = self.node_models_dict[0][node_type]
-            z, kl, input_embedding = model.train_loss_encode(
+            # approach is: 1 encoder, many decoders
+
+            # Encoder
+            model = self.node_models_dict[0][node_type] # only the first model's encoder is used
+            z, kl, input_embedding, dists = model.train_loss_encode(
                                     inputs=x,
                                     inputs_st=x_st_t,
                                     first_history_indices=first_history_index,
@@ -349,62 +359,48 @@ class TrajectronRisk(Trajectron):
                                     x_unf=x_unf,
                                     map_name=map_name,
                                     grid_tensor=grid_tensor)
-            # cluster the z into num_models clusters
-            # run stacking_classifier on z
-            per_example_likelihoods = []
+            x = input_embedding[0]
+
+            # cluster the zx into num_models clusters
+            z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
+            zx_features = torch.cat([z_example_per_mode, x.repeat(self.z_dim[node_type], 1)], dim=1)       
+            whitened = whiten(zx_features.cpu().detach().numpy())
+
+            if self.clusters[node_type] is None:
+                centroid, stacking_label = kmeans2(whitened, k=self.num_models, iter=10)
+            else: 
+                centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=10)
+            self.clusters[node_type] = centroid
+            target = torch.tensor(stacking_label)
+
+            # # if features are x, not zx:
+            # target_per_mode = target.reshape(self.z_dim[node_type], -1).transpose(0,1)
+            # target = torch.mode(target_per_mode).values
+
+            # run stacking_classifier on zx (or x)
+            mask = self.aggregation_func(target.to(torch.int64), zx_features, node_type) 
+
+            # if features are zx not x:
+            mask_per_mode = mask.reshape(self.z_dim[node_type], -1).transpose(0,1)
+            mask = torch.mode(mask_per_mode).values
+
+            # Decoder
+            per_example_losses = [] # per-model likelihoods
             for ens_index in self.num_ensemble: # for each model in ensemble
-                # Run decoder
+                # Run every model's decoder
                 model = self.node_models_dict[ens_index][node_type]            
                 per_example_likelihood, kl_term, inf_term = model.train_loss_decode_pt1(
-                                            z, kl, input_embedding, 
+                                            z, kl, input_embedding, dists,
                                             labels=y, 
                                             prediction_horizon=self.ph)
-                per_example_likelihoods.append(per_example_likelihood)
-            
-
-
-
-
-
-            batch_size = first_history_index.shape[0]
-            last_model_index = self.num_models - 1
-            ind_k = batch_size
-            mask = torch.zeros_like(first_history_index)
-            losses = []
-            encoded_inputs = []
-            for ens_index in self.num_ensemble: # for each model in ensemble
-                # Run forward pass
-                model = self.node_models_dict[ens_index][node_type]
-                encoded_input, per_example_likelihood, kl_term, inf_term = model.train_loss_pt1(
-                                        inputs=x,
-                                        inputs_st=x_st_t,
-                                        first_history_indices=first_history_index,
-                                        labels=y,
-                                        labels_st=y_st_t,
-                                        neighbors=restore(neighbors_data_st),
-                                        neighbors_edge_value=restore(neighbors_edge_value),
-                                        robot=robot_traj_st_t,
-                                        map=map,
-                                        prediction_horizon=self.ph,
-                                        heatmap_tensor=heatmap_tensor,
-                                        x_unf=x_unf,
-                                        map_name=map_name,
-                                        grid_tensor=grid_tensor)
-                encoded_inputs.append(encoded_input)
-                per_example_likelihood[mask != ens_index] = float('inf') # ignore examples belonging to prev models (since we're getting min k)
-                ind_k = #### TODO CLUSTERING ####
-                inds = torch.topk(per_example_likelihood, ind_k, largest=False, sorted=True) # get min k (worst=> smallest likelihood)
-                if ens_index != last_model_index: # if no more models, leave leftovers to last model
-                    mask[inds.indices] += 1 # leave the ones it got wrong to the next model
                 this_models_losses = per_example_likelihood[mask == ens_index]
+                per_example_losses.append(this_models_losses)
                 loss = train_loss_pt2(this_models_losses, kl_term, inf_term)
                 wandb.log({"{} train_loss_{}".format(str(node_type), ens_index): loss.item()})
-                losses.append(loss)
 
-            _ = self.aggregation_func(mask, encoded_inputs, node_type) 
-            if INCR_ETA:
-                return torch.mean(torch.stack(losses)) + self.stacking_model_loss * epoch # incr stack loss weight every epoch
-            return torch.mean(torch.stack(losses)) + self.stacking_model_loss
+            all_losses = torch.cat(per_example_losses)
+            total_loss = train_loss_pt2(all_losses, kl_term, inf_term)
+            return total_loss + self.stacking_model_loss
 
     def eval_loss(self, batch, node_type, gradboost_index=None):
         (first_history_index,
@@ -522,16 +518,9 @@ class TrajectronRisk(Trajectron):
             return eval_loss_pt2(aggregated).cpu().detach().numpy()
             
         if self.ensemble_method == 'clusterstack':
-            batch_size = first_history_index.shape[0]
-            last_model_index = self.num_models - 1
-            ind_k = batch_size
-            mask = torch.zeros_like(first_history_index)
-            nlls = []
-            encoded_inputs = []
-            for ens_index in self.num_ensemble: # for each model in ensemble
-                # Run forward pass
-                model = self.node_models_dict[ens_index][node_type]
-                encoded_input, nll = model.eval_loss_pt1(
+            # Encoder
+            model = self.node_models_dict[0][node_type] # only the first model's encoder is used
+            z, input_embedding, dists = model.eval_loss_encode(
                                     inputs=x,
                                     inputs_st=x_st_t,
                                     first_history_indices=first_history_index,
@@ -542,14 +531,23 @@ class TrajectronRisk(Trajectron):
                                     robot=robot_traj_st_t,
                                     map=map,
                                     prediction_horizon=self.ph)
-                encoded_inputs.append(encoded_input)
-                nlls.append(nll)
-                wandb.log({"{} eval_loss_{}".format(str(node_type), ens_index): eval_loss_pt2(nll).item()})
+            x = input_embedding[0]
+            # if features are zx not x:
+            z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
+            zx_features = torch.cat([z_example_per_mode, x.repeat(z.shape[0], 1)], dim=1)       
 
-            ens_model = self.aggregation_func(mask, encoded_inputs, node_type)
-            agg_preds = [nlls[ens_model[i]][i] for i in range(ens_model.shape[0])]
-            ret = eval_loss_pt2(torch.tensor(agg_preds))
-            return ret.cpu().detach().numpy()
+            nlls = []
+            for ens_index in self.num_ensemble: # for each model in ensemble
+                # Run forward pass
+                model = self.node_models_dict[ens_index][node_type]
+                encoded_input, nll = model.eval_loss_decode_pt1(
+                                            z, input_embedding, dists,
+                                            labels=y, 
+                                            prediction_horizon=self.ph)
+                wandb.log({"{} eval_loss_{}".format(str(node_type), ens_index): eval_loss_pt2(nll).item()})
+                nlls.append(nll)
+            aggregated = self.aggregation_func(nlls, zx_features, node_type, eval=True)
+            return eval_loss_pt2(aggregated).cpu().detach().numpy()
 
     def predict(self,
                 scene,
@@ -575,6 +573,7 @@ class TrajectronRisk(Trajectron):
             all_models_predictions = []
             encoded_inputs = []
             gmm_params_prod = None
+            clusterstack_encoder_output = None
             for ens_index in num_ensemble_subset: # for each model in ensemble
 
                 model = self.node_models_dict[ens_index][node_type]
@@ -609,7 +608,7 @@ class TrajectronRisk(Trajectron):
                     map = map.to(self.device)
 
                 # Run forward pass
-                encoded_input, predictions = model.predict(inputs=x,
+                encoder_output, predictions = model.predict(inputs=x,
                                             inputs_st=x_st_t,
                                             first_history_indices=first_history_index,
                                             neighbors=neighbors_data_st,
@@ -622,15 +621,29 @@ class TrajectronRisk(Trajectron):
                                             gmm_mode=gmm_mode,
                                             full_dist=full_dist,
                                             all_z_sep=all_z_sep)
+                x = encoder_output[0]
+                z = encoder_output[-1]
                 all_models_predictions.append(predictions)
-                encoded_inputs.append(encoded_input)
+                encoded_inputs.append(x)
+                if (self.ensemble_method == 'clusterstack') and ens_index == 0:
+                    clusterstack_encoder_output = encoder_output
+
                 if (self.ensemble_method == 'boost') or (self.ensemble_method == 'gradboost'):
                     gmm_params_prod = model.gmm_params # model's p_y_xz to use (prev) gmm_params_prod * new predicted gmm
 
             if all_models_predictions == []:
                 continue
+
+            features = encoded_inputs
+            if (self.ensemble_method == 'clusterstack'):
+                x = clusterstack_encoder_output[0]
+                z = clusterstack_encoder_output[-1]
+                # if features are zx not x:
+                z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
+                features = torch.cat([z_example_per_mode, x.repeat(z.shape[0], 1)], dim=1) 
+
             aggregated_ensemble_predictions = self.aggregation_func(all_models_predictions, 
-                                                                    encoded_inputs, node_type, 
+                                                                    features, node_type, 
                                                                     predict=True)
             predictions_np = aggregated_ensemble_predictions.cpu().detach().numpy()
 
