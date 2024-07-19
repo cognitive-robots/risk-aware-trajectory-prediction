@@ -349,6 +349,23 @@ def main():
             wandb.log({"epoch{}".format(label): epoch})
             model_registrar.to(args.device)
             train_dataset.augment = args.augment
+            if args.ensemble_method == 'clusterstack':
+                for node_type, data_loader in train_data_loader.items():
+                    curr_iter = curr_iter_node_type[node_type]
+                    pbar = tqdm(data_loader, ncols=80)
+                    # REMOVE_LATER = 0
+                    trajectron.cluster_init(node_type, args.batch_size)
+                    for batch in pbar:
+                        # if REMOVE_LATER > 3:
+                        #     break;
+                        # REMOVE_LATER += 1
+                        trajectron.set_curr_iter(curr_iter)
+                        trajectron.step_annealers(node_type)
+                        optimizer[node_type].zero_grad()
+                        # -------- ADDED HEATMAP_TENSOR & WANDB -------
+                        features = trajectron.get_encoded_features(batch, node_type, heatmap_tensor, grid_tensor, epoch, gradboost_index)      
+                        trajectron.clustering_step(features, node_type)
+                    trajectron.set_clusters(node_type)
             for node_type, data_loader in train_data_loader.items():
                 train_losses = []
                 counts = []

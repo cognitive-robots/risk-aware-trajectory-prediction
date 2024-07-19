@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from scipy.cluster.vq import vq, whiten, kmeans2
+from sklearn.cluster import MiniBatchKMeans
 import sys
 sys.path.append("Trajectron-plus-plus/trajectron/")
 from model.trajectron import Trajectron 
@@ -170,6 +171,7 @@ class TrajectronRisk(Trajectron):
             self.agg_models = agg_models
             self.aggregation_func = self.clusterstacking
             self.stack_eta = eta
+            self.kmeans = {}
 
     def set_curr_iter(self, curr_iter):
         self.curr_iter = curr_iter
@@ -366,11 +368,15 @@ class TrajectronRisk(Trajectron):
             zx_features = torch.cat([z_example_per_mode, x.repeat(self.z_dim[node_type], 1)], dim=1)       
             whitened = whiten(zx_features.cpu().detach().numpy())
 
-            if self.clusters[node_type] is None:
-                centroid, stacking_label = kmeans2(whitened, k=self.num_models, iter=10)
-            else: 
-                centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=10)
-            self.clusters[node_type] = centroid
+            # # if doing per_batch clustering:
+            # if self.clusters[node_type] is None:
+            #     centroid, stacking_label = kmeans2(whitened, k=self.num_models, iter=10)
+            # else: 
+            #     centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=10)
+            # self.clusters[node_type] = centroid
+
+            # if doing per_epoch clustering:
+            stacking_label = self.kmeans[node_type].predict(whitened)
             target = torch.tensor(stacking_label)
 
             # # if features are x, not zx:
@@ -707,3 +713,86 @@ class TrajectronRisk(Trajectron):
 
             average_batch_vel = np.mean(vel_array)
         return average_batch_vel
+
+    def cluster_init(self, node_type, batch_size):
+        if self.clusters[node_type] is None:
+            minibatch_kmeans = MiniBatchKMeans(n_clusters=self.num_models,
+                                    max_iter=10,
+                                    # random_state=0, # seed - use for debugging if needed
+                                    batch_size=batch_size,
+                                    n_init=1)
+        else:
+            minibatch_kmeans = MiniBatchKMeans(n_clusters=self.num_models,
+                                    init=self.clusters[node_type],
+                                    max_iter=10,
+                                    # random_state=0, # seed - use for debugging if needed
+                                    batch_size=batch_size,
+                                    n_init=1)
+        self.kmeans[node_type] = minibatch_kmeans
+
+    # for per_epoch clustering:
+    def clustering_step(self, zx_features, node_type):
+        whitened = whiten(zx_features.cpu().detach().numpy()) + 0.000000001 # for stable PSD matrix
+        self.kmeans[node_type] = self.kmeans[node_type].partial_fit(whitened)
+
+    def set_clusters(self, node_type):
+        self.clusters[node_type] = self.kmeans[node_type].cluster_centers_
+
+    # for per_batch clustering:
+    # def clustering_step(self, zx_features, node_type):
+    #     whitened = whiten(zx_features.cpu().detach().numpy()) + 0.000000001 # for stable PSD matrix
+    #     if self.clusters[node_type] is None:
+    #         centroid, _ = kmeans2(whitened, k=self.num_models, iter=10)
+    #     else: 
+    #         centroid, _ = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=10)
+    #     self.clusters[node_type] = centroid
+
+    def get_encoded_features(self, batch, node_type, heatmap_tensor, grid_tensor, epoch, gradboost_index=None):
+        (first_history_index,
+         x_t, y_t, x_st_t, y_st_t,
+         neighbors_data_st,
+         neighbors_edge_value,
+         robot_traj_st_t,
+         map,
+         #--------------ADDED--------------
+         x_unf_t,
+         map_name
+         #---------------------------------
+         ) = batch
+
+        x = x_t.to(self.device)
+        y = y_t.to(self.device)
+        #--------------ADDED--------------
+        x_unf = x_unf_t.to(self.device)
+        #---------------------------------
+        x_st_t = x_st_t.to(self.device)
+        y_st_t = y_st_t.to(self.device)
+        if robot_traj_st_t is not None:
+            robot_traj_st_t = robot_traj_st_t.to(self.device)
+        if type(map) == torch.Tensor:
+            map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise (randgaussmapnoise)
+            map = map.to(self.device)
+
+        # Encoder
+        model = self.node_models_dict[0][node_type] # only the first model's encoder is used
+        z, kl, input_embedding, dists = model.train_loss_encode(
+                                inputs=x,
+                                inputs_st=x_st_t,
+                                first_history_indices=first_history_index,
+                                labels=y,
+                                labels_st=y_st_t,
+                                neighbors=restore(neighbors_data_st),
+                                neighbors_edge_value=restore(neighbors_edge_value),
+                                robot=robot_traj_st_t,
+                                map=map,
+                                prediction_horizon=self.ph,
+                                heatmap_tensor=heatmap_tensor,
+                                x_unf=x_unf,
+                                map_name=map_name,
+                                grid_tensor=grid_tensor)
+        x = input_embedding[0]
+
+        # cluster the zx into num_models clusters
+        z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
+        zx_features = torch.cat([z_example_per_mode, x.repeat(self.z_dim[node_type], 1)], dim=1)       
+        return zx_features
