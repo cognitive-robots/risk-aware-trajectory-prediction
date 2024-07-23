@@ -6,12 +6,12 @@ This repository corresponds to the official source code of the paper:
 
 ### Repo Depenencies
 1. Clone the git repository
-2. Checkout the ```eccv2020``` branch
-3. From the ```4yp-roadrisk/``` directory , download the <a href="https://github.com/StanfordASL/Trajectron-plus-plus">Trajectron++ code</a> with
+2. From the ```4yp-roadrisk/``` directory , download the <a href="https://github.com/StanfordASL/Trajectron-plus-plus">Trajectron++ code</a> with
 
     ```git clone --recurse-submodules git@github.com:StanfordASL/Trajectron-plus-plus.git```
-5. Create the trajectron++ conda environment (instructions are within <a href="https://github.com/StanfordASL/Trajectron-plus-plus">Trajectron++ repo</a>)
-6. Make folders for the data by running
+3. Create the trajectron++ conda environment (instructions are within <a href="https://github.com/StanfordASL/Trajectron-plus-plus">Trajectron++ repo</a>)
+4. Checkout the ```eccv2020``` branch of the Trajectron-plus-plus repo
+5. Make folders for the data by running
 
     ```mkdir data```
 
