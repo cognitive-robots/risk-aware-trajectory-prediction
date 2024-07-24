@@ -132,16 +132,26 @@ class TrajectronRisk(Trajectron):
             inds = torch.mode(inds_per_mode).values
             losses_stacked = torch.stack(target)
             return losses_stacked[inds, range(len(inds))] # return predictions of most probably correct model
-        if predict:
+        if predict: # 20 samples answers coming from same mode
             # if features are zx not x:
             predictions = target
-            inds_per_sample = model_inference.reshape(-1, target[0].shape[1])
+            inds_per_mode = model_inference.reshape(-1, target[1].shape[1]).transpose(0,1)
+            inds = torch.mode(inds_per_mode).values
             ret = torch.zeros(predictions[0].shape).to(self.device)
-            for i in range(inds_per_sample.shape[0]):
-                for j in range(inds_per_sample.shape[1]): # per example in batch
-                    ind = inds_per_sample[i, j]
-                    ret[i,j,:,:] = predictions[ind][i,j,:,:]
+            for i in range(inds.shape[0]):
+                ind = inds[i]
+                ret[:,i,:,:] = predictions[ind][:,i,:,:]
             return ret 
+        # if predict: # 20 samples answers coming from different modes
+        #     # if features are zx not x:
+        #     predictions = target
+        #     inds_per_sample = model_inference.reshape(-1, target[0].shape[1])
+        #     ret = torch.zeros(predictions[0].shape).to(self.device)
+        #     for i in range(inds_per_sample.shape[0]):
+        #         for j in range(inds_per_sample.shape[1]): # per example in batch
+        #             ind = inds_per_sample[i, j]
+        #             ret[i,j,:,:] = predictions[ind][i,j,:,:]
+        #     return ret 
         loss = nn.CrossEntropyLoss()
 
         self.stacking_model_loss = loss(model_output, target.to(self.device)) * self.stack_eta
@@ -215,7 +225,7 @@ class TrajectronRisk(Trajectron):
         if robot_traj_st_t is not None:
             robot_traj_st_t = robot_traj_st_t.to(self.device)
         if type(map) == torch.Tensor:
-            map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise (randgaussmapnoise)
+            # map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise (randgaussmapnoise)
             map = map.to(self.device)
 
         if self.ensemble_method == 'gradboost':
