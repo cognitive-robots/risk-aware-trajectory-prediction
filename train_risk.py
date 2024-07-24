@@ -297,8 +297,11 @@ def main():
         x_size = trajectron.x_size 
         z_dim = trajectron.z_dim
         zx_dim = trajectron.zx_dim
+        feat_dim = {}
+        for node_type in train_env.NodeType:
+            feat_dim[node_type] = hyperparams['map_encoder'][node_type]['output_size']
         input_multiplier = 1 if 'cluster' in args.ensemble_method else num_models
-        input_dims = zx_dim if 'cluster' in args.ensemble_method else x_size
+        input_dims = feat_dim if 'cluster' in args.ensemble_method else x_size
         aggregation_model = create_stacking_model(train_env, input_dims, 
                                                   args.device, input_multiplier, num_models)
 

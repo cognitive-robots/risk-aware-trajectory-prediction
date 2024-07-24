@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from scipy.cluster.vq import vq, whiten, kmeans2
 import sys
@@ -7,7 +9,6 @@ from model.trajectron import Trajectron
 from model.dataset.preprocessing import restore
 from mgcvae_risk import MultimodalGenerativeCVAERisk, train_loss_pt2, eval_loss_pt2
 from preprocessing_risk import get_timesteps_data
-import torch.nn as nn
 import wandb
 from skimage.util import random_noise
 
@@ -18,6 +19,7 @@ INCR_ETA = False
 # if we're sweeping over these, these are ignored
 STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 stacking_model_eta = 0.1 # for stack or stackboost
+vicreg_eta = 0
 
 def create_stacking_model(env, input_dims, device, input_multiplier, num_models):
     models = {}
@@ -40,6 +42,39 @@ def mask_neighbors(neighbors, cond): #cond is an if condition like (mask == ens_
     for key in restored_neighbors.keys():
         neighbors_masked[key] = [restored_neighbors[key][i] for i in neighbor_inds]
     return neighbors_masked
+
+def vicreg_loss(x, y, sim_coeff=25, std_coeff=25, cov_coeff=1):
+        batch_size = x.shape[0]
+        num_features = x.shape[1]
+
+        repr_loss = F.mse_loss(x, y)
+
+        # x = torch.cat(FullGatherLayer.apply(x), dim=0)
+        # y = torch.cat(FullGatherLayer.apply(y), dim=0)
+        x = x - x.mean(dim=0)
+        y = y - y.mean(dim=0)
+
+        std_x = torch.sqrt(x.var(dim=0) + 0.0001)
+        std_y = torch.sqrt(y.var(dim=0) + 0.0001)
+        std_loss = torch.mean(F.relu(1 - std_x)) / 2 + torch.mean(F.relu(1 - std_y)) / 2
+
+        cov_x = (x.T @ x) / (batch_size - 1)
+        cov_y = (y.T @ y) / (batch_size - 1)
+        cov_loss = off_diagonal(cov_x).pow_(2).sum().div(
+            num_features
+        ) + off_diagonal(cov_y).pow_(2).sum().div(num_features)
+
+        loss = (
+            sim_coeff * repr_loss
+            + std_coeff * std_loss
+            + cov_coeff * cov_loss
+        )
+        return loss
+
+def off_diagonal(x):
+    n, m = x.shape
+    assert n == m
+    return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
 
 class TrajectronRisk(Trajectron):
 
@@ -170,6 +205,7 @@ class TrajectronRisk(Trajectron):
             self.agg_models = agg_models
             self.aggregation_func = self.clusterstacking
             self.stack_eta = eta
+            self.vicreg_eta = vicreg_eta
 
     def set_curr_iter(self, curr_iter):
         self.curr_iter = curr_iter
@@ -213,8 +249,9 @@ class TrajectronRisk(Trajectron):
         if robot_traj_st_t is not None:
             robot_traj_st_t = robot_traj_st_t.to(self.device)
         if type(map) == torch.Tensor:
-            map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise (randgaussmapnoise)
             map = map.to(self.device)
+            map_prime = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise (randgaussmapnoise)
+            map_prime = map_prime.to(self.device)
 
         if self.ensemble_method == 'gradboost':
             ens_index = gradboost_index
@@ -361,28 +398,43 @@ class TrajectronRisk(Trajectron):
                                     grid_tensor=grid_tensor)
             x = input_embedding[0]
 
-            # cluster the zx into num_models clusters
-            z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
-            zx_features = torch.cat([z_example_per_mode, x.repeat(self.z_dim[node_type], 1)], dim=1)       
-            whitened = whiten(zx_features.cpu().detach().numpy())
+            # # cluster the zx into num_models clusters
+            # z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
+            # features = torch.cat([z_example_per_mode, x.repeat(self.z_dim[node_type], 1)], dim=1)       
 
-            if self.clusters[node_type] is None:
-                centroid, stacking_label = kmeans2(whitened, k=self.num_models, iter=10)
+            # features are map embedding
+            features = model.encoded_map
+            features_prime = model.get_map_encoding(map_prime)
+            vicreg_loss_term = vicreg_loss(features, features_prime) * self.vicreg_eta
+
+            if epoch < 24: 
+                batch_size = features.shape[0]
+                target = torch.randint(self.num_models, (batch_size,))
+                if epoch == 12:
+                    self.vicreg_eta = 10
+            elif self.clusters[node_type] is None:
+                whitened = whiten(features.cpu().detach().numpy())
+                centroid, stacking_label = kmeans2(whitened, k=self.num_models, minit='points', iter=10)
+                self.clusters[node_type] = centroid
+                target = torch.tensor(stacking_label)
+                self.vicreg_eta = 0.5
             else: 
+                whitened = whiten(features.cpu().detach().numpy())
                 centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=10)
-            self.clusters[node_type] = centroid
-            target = torch.tensor(stacking_label)
+                self.clusters[node_type] = centroid
+                target = torch.tensor(stacking_label)
+                self.vicreg_eta = 0.1
 
             # # if features are x, not zx:
             # target_per_mode = target.reshape(self.z_dim[node_type], -1).transpose(0,1)
             # target = torch.mode(target_per_mode).values
 
             # run stacking_classifier on zx (or x)
-            mask = self.aggregation_func(target.to(torch.int64), zx_features, node_type) 
+            mask = self.aggregation_func(target.to(torch.int64), features, node_type) 
 
-            # if features are zx not x:
-            mask_per_mode = mask.reshape(self.z_dim[node_type], -1).transpose(0,1)
-            mask = torch.mode(mask_per_mode).values
+            # # if features are zx not x:
+            # mask_per_mode = mask.reshape(self.z_dim[node_type], -1).transpose(0,1)
+            # mask = torch.mode(mask_per_mode).values
 
             # Decoder
             per_example_losses = [] # per-model likelihoods
@@ -400,7 +452,7 @@ class TrajectronRisk(Trajectron):
 
             all_losses = torch.cat(per_example_losses)
             total_loss = train_loss_pt2(all_losses, kl_term, inf_term)
-            return total_loss + self.stacking_model_loss
+            return total_loss + self.stacking_model_loss + vicreg_loss_term
 
     def eval_loss(self, batch, node_type, gradboost_index=None):
         (first_history_index,
@@ -532,9 +584,12 @@ class TrajectronRisk(Trajectron):
                                     map=map,
                                     prediction_horizon=self.ph)
             x = input_embedding[0]
-            # if features are zx not x:
-            z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
-            zx_features = torch.cat([z_example_per_mode, x.repeat(z.shape[0], 1)], dim=1)       
+            # # if features are zx not x:
+            # z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
+            # features = torch.cat([z_example_per_mode, x.repeat(z.shape[0], 1)], dim=1)    
+
+            # if features are map_embedding
+            features = model.encoded_map
 
             nlls = []
             for ens_index in self.num_ensemble: # for each model in ensemble
@@ -546,7 +601,7 @@ class TrajectronRisk(Trajectron):
                                             prediction_horizon=self.ph)
                 wandb.log({"{} eval_loss_{}".format(str(node_type), ens_index): eval_loss_pt2(nll).item()})
                 nlls.append(nll)
-            aggregated = self.aggregation_func(nlls, zx_features, node_type, eval=True)
+            aggregated = self.aggregation_func(nlls, features, node_type, eval=True)
             return eval_loss_pt2(aggregated).cpu().detach().numpy()
 
     def predict(self,
@@ -638,9 +693,13 @@ class TrajectronRisk(Trajectron):
             if (self.ensemble_method == 'clusterstack'):
                 x = clusterstack_encoder_output[0]
                 z = clusterstack_encoder_output[-1]
-                # if features are zx not x:
-                z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
-                features = torch.cat([z_example_per_mode, x.repeat(z.shape[0], 1)], dim=1) 
+
+                # # if features are zx not x:
+                # z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
+                # features = torch.cat([z_example_per_mode, x.repeat(z.shape[0], 1)], dim=1) 
+
+                # features are map_embedding
+                features = model.encoded_map
 
             aggregated_ensemble_predictions = self.aggregation_func(all_models_predictions, 
                                                                     features, node_type, 

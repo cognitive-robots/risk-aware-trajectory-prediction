@@ -134,6 +134,176 @@ def add_gmm_params(gmm1, gmm2, lamda=1): # gmm1 is the prev combined params, gmm
     return gmm3
 
 class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
+    def obtain_encoded_tensors(self,
+                               mode,
+                               inputs,
+                               inputs_st,
+                               labels,
+                               labels_st,
+                               first_history_indices,
+                               neighbors,
+                               neighbors_edge_value,
+                               robot,
+                               map) -> (torch.Tensor,
+                                        torch.Tensor,
+                                        torch.Tensor,
+                                        torch.Tensor,
+                                        torch.Tensor,
+                                        torch.Tensor):
+        """
+        Encodes input and output tensors for node and robot.
+
+        :param mode: Mode in which the model is operated. E.g. Train, Eval, Predict.
+        :param inputs: Input tensor including the state for each agent over time [bs, t, state].
+        :param inputs_st: Standardized input tensor.
+        :param labels: Label tensor including the label output for each agent over time [bs, t, pred_state].
+        :param labels_st: Standardized label tensor.
+        :param first_history_indices: First timestep (index) in scene for which data is available for a node [bs]
+        :param neighbors: Preprocessed dict (indexed by edge type) of list of neighbor states over time.
+                            [[bs, t, neighbor state]]
+        :param neighbors_edge_value: Preprocessed edge values for all neighbor nodes [[N]]
+        :param robot: Standardized robot state over time. [bs, t, robot_state]
+        :param map: Tensor of Map information. [bs, channels, x, y]
+        :return: tuple(x, x_nr_t, y_e, y_r, y, n_s_t0)
+            WHERE
+            - x: Encoded input / condition tensor to the CVAE x_e.
+            - x_r_t: Robot state (if robot is in scene).
+            - y_e: Encoded label / future of the node.
+            - y_r: Encoded future of the robot.
+            - y: Label / future of the node.
+            - n_s_t0: Standardized current state of the node.
+        """
+
+        x, x_r_t, y_e, y_r, y = None, None, None, None, None
+        initial_dynamics = dict()
+
+        batch_size = inputs.shape[0]
+
+        #########################################
+        # Provide basic information to encoders #
+        #########################################
+        node_history = inputs
+        node_present_state = inputs[:, -1]
+        node_pos = inputs[:, -1, 0:2]
+        node_vel = inputs[:, -1, 2:4]
+
+        node_history_st = inputs_st
+        node_present_state_st = inputs_st[:, -1]
+        node_pos_st = inputs_st[:, -1, 0:2]
+        node_vel_st = inputs_st[:, -1, 2:4]
+
+        n_s_t0 = node_present_state_st
+
+        initial_dynamics['pos'] = node_pos
+        initial_dynamics['vel'] = node_vel
+
+        self.dynamic.set_initial_condition(initial_dynamics)
+
+        if self.hyperparams['incl_robot_node']:
+            x_r_t, y_r = robot[..., 0, :], robot[..., 1:, :]
+
+        ##################
+        # Encode History #
+        ##################
+        node_history_encoded = self.encode_node_history(mode,
+                                                        node_history_st,
+                                                        first_history_indices)
+
+        ##################
+        # Encode Present #
+        ##################
+        node_present = node_present_state_st  # [bs, state_dim]
+
+        ##################
+        # Encode Future #
+        ##################
+        if mode != ModeKeys.PREDICT:
+            y = labels_st
+
+        ##############################
+        # Encode Node Edges per Type #
+        ##############################
+        if self.hyperparams['edge_encoding']:
+            node_edges_encoded = list()
+            for edge_type in self.edge_types:
+                # Encode edges for given edge type
+                encoded_edges_type = self.encode_edge(mode,
+                                                      node_history,
+                                                      node_history_st,
+                                                      edge_type,
+                                                      neighbors[edge_type],
+                                                      neighbors_edge_value[edge_type],
+                                                      first_history_indices)
+                node_edges_encoded.append(encoded_edges_type)  # List of [bs/nbs, enc_rnn_dim]
+            #####################
+            # Encode Node Edges #
+            #####################
+            total_edge_influence = self.encode_total_edge_influence(mode,
+                                                                    node_edges_encoded,
+                                                                    node_history_encoded,
+                                                                    batch_size)
+
+        ################
+        # Map Encoding #
+        ################
+        if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
+            if self.log_writer and (self.curr_iter + 1) % 500 == 0:
+                map_clone = map.clone()
+                map_patch = self.hyperparams['map_encoder'][self.node_type]['patch_size']
+                map_clone[:, :, map_patch[1] - 5:map_patch[1] + 5, map_patch[0] - 5:map_patch[0] + 5] = 1.
+                self.log_writer.add_images(f"{self.node_type}/cropped_maps", map_clone,
+                                           self.curr_iter, dataformats='NCWH')
+
+            encoded_map = self.node_modules[self.node_type + '/map_encoder'](map * 2. - 1., (mode == ModeKeys.TRAIN))
+            self.encoded_map = encoded_map.detach()
+            do = self.hyperparams['map_encoder'][self.node_type]['dropout']
+            encoded_map = F.dropout(encoded_map, do, training=(mode == ModeKeys.TRAIN))
+
+        ######################################
+        # Concatenate Encoder Outputs into x #
+        ######################################
+        x_concat_list = list()
+
+        # Every node has an edge-influence encoder (which could just be zero).
+        if self.hyperparams['edge_encoding']:
+            x_concat_list.append(total_edge_influence)  # [bs/nbs, 4*enc_rnn_dim]
+
+        # Every node has a history encoder.
+        x_concat_list.append(node_history_encoded)  # [bs/nbs, enc_rnn_dim_history]
+
+        if self.hyperparams['incl_robot_node']:
+            robot_future_encoder = self.encode_robot_future(mode, x_r_t, y_r)
+            x_concat_list.append(robot_future_encoder)
+
+        if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
+            if self.log_writer:
+                self.log_writer.add_scalar(f"{self.node_type}/encoded_map_max",
+                                           torch.max(torch.abs(encoded_map)), self.curr_iter)
+            x_concat_list.append(encoded_map)
+
+        x = torch.cat(x_concat_list, dim=1)
+
+        if mode == ModeKeys.TRAIN or mode == ModeKeys.EVAL:
+            y_e = self.encode_node_future(mode, node_present, y)
+
+        return x, x_r_t, y_e, y_r, y, n_s_t0
+    
+    def get_map_encoding(self, map, mode=ModeKeys.TRAIN):
+        ################
+        # only Map Encoding #
+        ################
+        if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
+            if self.log_writer and (self.curr_iter + 1) % 500 == 0:
+                map_clone = map.clone()
+                map_patch = self.hyperparams['map_encoder'][self.node_type]['patch_size']
+                map_clone[:, :, map_patch[1] - 5:map_patch[1] + 5, map_patch[0] - 5:map_patch[0] + 5] = 1.
+                self.log_writer.add_images(f"{self.node_type}/cropped_maps", map_clone,
+                                           self.curr_iter, dataformats='NCWH')
+
+            encoded_map = self.node_modules[self.node_type + '/map_encoder'](map * 2. - 1., (mode == ModeKeys.TRAIN))
+            return encoded_map.detach()
+            do = self.hyperparams['map_encoder'][self.node_type]['dropout']
+            encoded_map = F.dropout(encoded_map, do, training=(mode == ModeKeys.TRAIN))
 
     # def create_graphical_model(self, edge_types):
     #     """
