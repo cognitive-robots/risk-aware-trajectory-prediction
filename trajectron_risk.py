@@ -414,13 +414,15 @@ class TrajectronRisk(Trajectron):
                     self.vicreg_eta = 10
             elif self.clusters[node_type] is None:
                 whitened = whiten(features.cpu().detach().numpy())
-                centroid, stacking_label = kmeans2(whitened, k=self.num_models, minit='points', iter=10)
+                normalized = F.normalize(whitened)
+                centroid, stacking_label = kmeans2(normalized, k=self.num_models, minit='points', iter=10)
                 self.clusters[node_type] = centroid
                 target = torch.tensor(stacking_label)
                 self.vicreg_eta = 0.5
             else: 
                 whitened = whiten(features.cpu().detach().numpy())
-                centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=10)
+                normalized = F.normalize(whitened)
+                centroid, stacking_label = kmeans2(normalized, k=self.clusters[node_type], minit='matrix', iter=10)
                 self.clusters[node_type] = centroid
                 target = torch.tensor(stacking_label)
                 self.vicreg_eta = 0.1
