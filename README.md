@@ -6,7 +6,7 @@ This repository corresponds to the official source code of the paper:
 
 ### Repo Depenencies
 1. Clone the git repository
-2. From the ```4yp-roadrisk/``` directory , download the <a href="https://github.com/StanfordASL/Trajectron-plus-plus">Trajectron++ code</a> with
+2. From the ```risk-aware-trajectory-prediction/``` directory , download the <a href="https://github.com/StanfordASL/Trajectron-plus-plus">Trajectron++ code</a> with
 
     ```git clone --recurse-submodules git@github.com:StanfordASL/Trajectron-plus-plus.git```
 3. Create the trajectron++ conda environment (instructions are within <a href="https://github.com/StanfordASL/Trajectron-plus-plus">Trajectron++ repo</a>)
@@ -15,13 +15,13 @@ This repository corresponds to the official source code of the paper:
 
     ```mkdir data```
 
-   from the ```4yp-roadrisk/``` directory 
+   from the ```risk-aware-trajectory-prediction/``` directory 
 
 ### Data
 
-1. Follow the instructions within the Trajectron++ repository to download the full nuScenes dataset into the ```4yp-roadrisk/Trajectron_plus_plus/experiments/nuScenes``` folder (to do this within commandline, follow https://github.com/nutonomy/nuscenes-devkit/issues/110)
+1. Follow the instructions within the Trajectron++ repository to download the full nuScenes dataset into the ```risk-aware-trajectory-prediction/Trajectron_plus_plus/experiments/nuScenes``` folder (to do this within commandline, follow https://github.com/nutonomy/nuscenes-devkit/issues/110)
 3. activate the trajectron++ conda environment
-4. from the ```4yp-roadrisk/``` directory run
+4. from the ```risk-aware-trajectory-prediction/``` directory run
 
     ```python process_data.py --data=./Trajectron-plus-plus/experiments/nuScenes/v1.0 --version="v1.0-trainval" --output_path=./data```
 
