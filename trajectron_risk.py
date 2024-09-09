@@ -40,6 +40,18 @@ class TrajectronRisk(Trajectron):
          #---------------------------------
          ) = batch
 
+        # ########## PLOT MAPS AS FIGURES ############
+        # import matplotlib.pyplot as plt
+        # import time
+        # if str(node_type) == 'PEDESTRIAN':
+        #     for i in range(map.shape[0]):
+        #         if torch.all(map[i] == 0):
+        #             continue
+        #         plt.imshow(map[i].flip(0).permute((1,2,0)).cpu())
+        #         plt.savefig('map_figs/{}_map_{}_{}.png'.format(node_type, i, time.time_ns()))
+        #         import pdb; pdb.set_trace()
+        ################################################
+
         x = x_t.to(self.device)
         y = y_t.to(self.device)
         #--------------ADDED--------------

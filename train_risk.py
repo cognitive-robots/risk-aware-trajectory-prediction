@@ -275,7 +275,11 @@ def main():
         for node_type, data_loader in train_data_loader.items():
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
+            # REMOVE_LATER = 0
             for batch in pbar:
+                # if REMOVE_LATER > 5:
+                #     break;
+                # REMOVE_LATER += 1   
                 trajectron.set_curr_iter(curr_iter)
                 trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
