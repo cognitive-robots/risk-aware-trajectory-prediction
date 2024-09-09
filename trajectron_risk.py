@@ -67,6 +67,7 @@ class TrajectronRisk(Trajectron):
                 if node_type in self.pred_state.keys():
                     self.node_models_dict[ens_index][node_type] = MultimodalGenerativeCVAERisk(env,
                                                                                 node_type,
+                                                                                ens_index,
                                                                                 self.model_registrar,
                                                                                 self.hyperparams,
                                                                                 self.device,
@@ -600,6 +601,7 @@ class TrajectronRisk(Trajectron):
             aggregated_ensemble_predictions = self.aggregation_func(all_models_predictions, 
                                                                     encoded_inputs, node_type, 
                                                                     predict=True)
+            # aggregated_ensemble_predictions = all_models_predictions[-1] # when combining smartly, pick last model (has all combined info) and always do gmm_params_prod
             predictions_np = aggregated_ensemble_predictions.cpu().detach().numpy()
 
             # Assign predictions to node
