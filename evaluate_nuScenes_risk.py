@@ -11,9 +11,11 @@ sys.path.append("./Trajectron-plus-plus/trajectron")
 from tqdm import tqdm
 from model.model_registrar import ModelRegistrar
 from model.trajectron import Trajectron
+from trajectron_risk import TrajectronRisk
 import evaluation
 import utils
 from scipy.interpolate import RectBivariateSpline
+NUM_ENSEMBLE = [0, 1]
 
 seed = 0
 np.random.seed(seed)
@@ -56,9 +58,9 @@ def load_model(model_dir, env, ts=100):
     with open(os.path.join(model_dir, 'config.json'), 'r') as config_json:
         hyperparams = json.load(config_json)
 
-    trajectron = Trajectron(model_registrar, hyperparams, None, 'cpu')
+    trajectron = TrajectronRisk(model_registrar, hyperparams, None, 'cpu')
 
-    trajectron.set_environment(env)
+    trajectron.set_environment(env, NUM_ENSEMBLE)
     trajectron.set_annealing_params()
     return trajectron, hyperparams
 

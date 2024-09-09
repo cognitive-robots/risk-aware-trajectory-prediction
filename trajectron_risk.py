@@ -67,6 +67,7 @@ class TrajectronRisk(Trajectron):
                 if node_type in self.pred_state.keys():
                     self.node_models_dict[ens_index][node_type] = MultimodalGenerativeCVAERisk(env,
                                                                                 node_type,
+                                                                                ens_index,
                                                                                 self.model_registrar,
                                                                                 self.hyperparams,
                                                                                 self.device,
