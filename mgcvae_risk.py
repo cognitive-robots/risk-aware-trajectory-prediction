@@ -133,6 +133,16 @@ def add_gmm_params(gmm1, gmm2, lamda=1): # gmm1 is the prev combined params, gmm
             import pdb; pdb.set_trace()
     return gmm3
 
+def both_gmm_params(gmm1, gmm2): # gmm1 is the prev combined params, gmm2 is the new one
+    (log_pis1, mus1, log_sigmas1, corrs1) = gmm1    
+    (log_pis2, mus2, log_sigmas2, corrs2) = gmm2
+    log_pis3 = torch.cat([log_pis1 / 2, log_pis2 / 2], dim=-1)
+    mus3 = torch.cat([mus1, mus2], dim=-1)
+    log_sigmas3 = torch.cat([log_sigmas1, log_sigmas2], dim=-1)
+    corrs3 = torch.cat([corrs1, corrs2], dim=-1)
+    gmm3 = (log_pis3, mus3, log_sigmas3, corrs3)
+    return gmm3
+
 class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
 
     # def create_graphical_model(self, edge_types):
@@ -255,6 +265,7 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
             (log_pis, mus, log_sigmas, corrs) = combined_gmm_params
 
         self.gmm_params = (log_pis.detach(), mus.detach(), log_sigmas.detach(), corrs.detach())
+        # num_components = log_pis.shape[-1] # changes if we're doing both_gmm_params
         ###-------------------
 
         a_dist = GMM2D(torch.reshape(log_pis, [num_samples, -1, ph, num_components]),
