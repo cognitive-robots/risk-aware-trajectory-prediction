@@ -293,7 +293,7 @@ def main():
     # create aggregation model for stacking
     aggregation_model = None
     if 'stack' in args.ensemble_method:
-        aggregation_model = create_stacking_model(train_env, trajectron.get_x_size(), args.device, NUM_ENSEMBLE)
+        aggregation_model = create_stacking_model(train_env, model_registrar, trajectron.get_x_size(), args.device, NUM_ENSEMBLE)
 
     trajectron.set_aggregation(args.ensemble_method,
             agg_models=aggregation_model, percentage=percentage, eta=eta)

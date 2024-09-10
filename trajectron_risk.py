@@ -18,7 +18,7 @@ INCR_ETA = False
 # STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 # stacking_model_eta = 0.1 # for stack or stackboost
 
-def create_stacking_model(env, x_size, device, num_ensemble):
+def create_stacking_model(env, model_registrar, x_size, device, num_ensemble):
     num_models = len(num_ensemble)
     models = {}
     for node_type in env.NodeType:
@@ -29,7 +29,7 @@ def create_stacking_model(env, x_size, device, num_ensemble):
         # hidden_layer_size2 = int(2/3 * hidden_layer_size1 + output_layer_size)
         # hidden_layer_size3 = int(2/3 * hidden_layer_size2 + output_layer_size)
         # hidden_layer_size4 = int(2/3 * hidden_layer_size3 + output_layer_size)
-        models[node_type] = nn.Sequential(
+        model_if_absent = nn.Sequential(
                                 nn.Linear(input_layer_size, hidden_layer_size1).to(device),
                                 nn.ReLU(),
                                 nn.Linear(hidden_layer_size1, output_layer_size).to(device),
@@ -40,6 +40,7 @@ def create_stacking_model(env, x_size, device, num_ensemble):
                                 # nn.ReLU(),
                                 # nn.Linear(hidden_layer_size, output_layer_size).to(device),
                                 nn.ReLU())
+        models[node_type] = model_registrar.get_model(str(node_type) + '/stacking_model', model_if_absent)
     return models
 
 def mask_neighbors(neighbors, cond): #cond is an if condition like (mask == ens_index)
