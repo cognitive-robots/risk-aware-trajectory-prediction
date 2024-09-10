@@ -641,9 +641,11 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
         if self.hyperparams['dynamic'][self.node_type_str]['distribution']:
             y_dist = self.dynamic.integrate_distribution(a_dist, x)
             if torch.any(~torch.isfinite(y_dist.corrs)) or torch.any(~torch.isfinite(y_dist.log_sigmas)):
-                import pdb; pdb.set_trace()
-                y_dist.corrs = torch.nan_to_num(y_dist.corrs)
-                y_dist.log_sigmas = torch.nan_to_num(y_dist.log_sigmas)
+                # import pdb; pdb.set_trace()
+                # if we don't know what corrs are, make it uncorrelated
+                y_dist.corrs[~torch.isfinite(y_dist.corrs)] = 0
+                # if we don't know what log_sigmas are, make it big (high uncertainty) (max of the log_sigmas already in the tensor)
+                y_dist.log_sigmas[~torch.isfinite(y_dist.log_sigmas)] = torch.max(y_dist.log_sigmas[torch.isfinite(y_dist.log_sigmas)])
                 
         else:
             y_dist = a_dist
