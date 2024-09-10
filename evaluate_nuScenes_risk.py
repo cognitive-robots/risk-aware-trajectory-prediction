@@ -30,6 +30,7 @@ parser.add_argument("--data", help="full path to data file", type=str)
 parser.add_argument("--output_path", help="path to output csv file", type=str)
 parser.add_argument("--output_tag", help="name tag for output file", type=str)
 parser.add_argument("--node_type", help="node type to evaluate", type=str)
+parser.add_argument("--ensemble_method", help="bag, stack, boost, stackboost, or gradboost", type=str)
 parser.add_argument("--prediction_horizon", nargs='+', help="prediction horizon", type=int, default=None)
 args = parser.parse_args()
 
@@ -61,6 +62,7 @@ def load_model(model_dir, env, ts=100):
     trajectron = TrajectronRisk(model_registrar, hyperparams, None, 'cpu')
 
     trajectron.set_environment(env, NUM_ENSEMBLE)
+    trajectron.set_aggregation(args.ensemble_method)
     trajectron.set_annealing_params()
     return trajectron, hyperparams
 
@@ -96,7 +98,6 @@ if __name__ == "__main__":
             print("-- Evaluating GMM Z Mode (Most Likely)")
             for scene in tqdm(scenes):
                 timesteps = np.arange(scene.timesteps)
-
                 predictions = eval_stg.predict(scene,
                                                timesteps,
                                                ph,
