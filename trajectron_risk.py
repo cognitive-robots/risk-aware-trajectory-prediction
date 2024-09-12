@@ -665,3 +665,51 @@ class TrajectronRisk(Trajectron):
 
             average_batch_vel = np.mean(vel_array)
         return average_batch_vel
+
+    def get_kalman_fde(self,
+                scene,
+                timesteps,
+                ph,
+                node_type,
+                kalman_filter,
+                min_future_timesteps=0,
+                min_history_timesteps=1,
+                final_timestep=1):
+
+
+        ens_index = self.num_ensemble[0]
+        model = self.node_models_dict[ens_index][node_type]
+        # Get Input data for node type and given timesteps
+        batch = get_timesteps_data(env=self.env, scene=scene, t=timesteps, node_type=node_type, state=self.state,
+                                    pred_state=self.pred_state, edge_types=model.edge_types,
+                                    min_ht=min_history_timesteps, max_ht=self.max_ht, min_ft=min_future_timesteps,
+                                    max_ft=min_future_timesteps, hyperparams=self.hyperparams)
+        # There are no nodes of type present for timestep
+        
+        if batch is None:
+            return
+        (first_history_index,
+            x_t, y_t, x_st_t, y_st_t,
+            neighbors_data_st,
+            neighbors_edge_value,
+            robot_traj_st_t,
+            map,
+        #--------------ADDED--------------
+            x_unf_t,
+            map_name
+        #---------------------------------
+        ), nodes, timesteps_o = batch
+        ret_list = []
+        ret_array = np.array(ret_list)
+        x = x_t.to(self.device)
+        y = y_t.to(self.device)
+        #
+        errors = []
+        for i in range(len(x)):
+            hist = x[i,:,:2]
+            gt = y[i,final_timestep-1,:2]
+            kalman_estimate = kalman_filter(hist, final_timestep)
+            error = np.linalg.norm(kalman_estimate - gt)
+            if not np.isnan(error):
+                errors.append(error)
+        return np.array(errors)
