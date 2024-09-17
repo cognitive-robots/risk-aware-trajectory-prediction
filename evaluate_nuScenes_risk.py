@@ -15,7 +15,8 @@ from trajectron_risk import TrajectronRisk, create_stacking_model
 import evaluation
 import utils
 from scipy.interpolate import RectBivariateSpline
-NUM_ENSEMBLE = [0, 1]
+# NUM_ENSEMBLE = [0, 1]
+# BOTH_GMM = False # ONLY FOR BAG
 
 seed = 0
 np.random.seed(seed)
@@ -32,6 +33,8 @@ parser.add_argument("--output_tag", help="name tag for output file", type=str)
 parser.add_argument("--node_type", help="node type to evaluate", type=str)
 parser.add_argument("--ensemble_method", help="bag, stack, boost, stackboost, or gradboost", type=str)
 parser.add_argument("--prediction_horizon", nargs='+', help="prediction horizon", type=int, default=None)
+parser.add_argument("--num_ensemble", nargs='+', help="list model names", type=int, default=None)
+parser.add_argument("--both_gmm",  action='store_true', help="(only for bag) whether to combine models' gmms")
 args = parser.parse_args()
 
 
@@ -60,10 +63,10 @@ def load_model(model_dir, env, ts=100):
         hyperparams = json.load(config_json)
 
     trajectron = TrajectronRisk(model_registrar, hyperparams, None, 'cpu')
-    trajectron.set_environment(env, NUM_ENSEMBLE)
+    trajectron.set_environment(env, args.num_ensemble)
     aggregation_model = None
     if 'stack' in args.ensemble_method:
-        aggregation_model = create_stacking_model(env, model_registrar, trajectron.get_x_size(), 'cpu', NUM_ENSEMBLE)
+        aggregation_model = create_stacking_model(env, model_registrar, trajectron.get_x_size(), 'cpu', args.num_ensemble)
 
     trajectron.set_aggregation(args.ensemble_method, agg_models=aggregation_model)
     trajectron.set_annealing_params()
@@ -108,7 +111,8 @@ if __name__ == "__main__":
                                                min_future_timesteps=8,
                                                z_mode=True,
                                                gmm_mode=True,
-                                               full_dist=False)  # This will trigger grid sampling
+                                               full_dist=False,
+                                               both_gmm=args.both_gmm)  # This will trigger grid sampling
 
                 batch_error_dict = evaluation.compute_batch_statistics(predictions,
                                                                        scene.dt,
@@ -141,7 +145,8 @@ if __name__ == "__main__":
                                                min_future_timesteps=8,
                                                z_mode=False,
                                                gmm_mode=False,
-                                               full_dist=False)
+                                               full_dist=False,
+                                               both_gmm=args.both_gmm)
                 if not predictions:
                     continue
 
@@ -175,7 +180,8 @@ if __name__ == "__main__":
                                                min_future_timesteps=8,
                                                z_mode=False,
                                                gmm_mode=False,
-                                               full_dist=False)
+                                               full_dist=False,
+                                               both_gmm=args.both_gmm)
                 
                 # vel_avg = eval_stg.get_vel(scene,
                 #                                timesteps,

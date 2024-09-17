@@ -532,7 +532,8 @@ class TrajectronRisk(Trajectron):
                 z_mode=False,
                 gmm_mode=False,
                 full_dist=True,
-                all_z_sep=False):
+                all_z_sep=False,
+                both_gmm=False):
         
         up_to_model = None
         if last_model_index:
@@ -549,6 +550,7 @@ class TrajectronRisk(Trajectron):
 
                 model = self.node_models_dict[ens_index][node_type]
                 model.prev_gmm_params = gmm_params_prod # None for all except boost
+                model.both_gmm = both_gmm # false for all except bag sometimes
 
                 # Get Input data for node type and given timesteps
                 batch = get_timesteps_data(env=self.env, scene=scene, t=timesteps, node_type=node_type, state=self.state,
@@ -594,15 +596,17 @@ class TrajectronRisk(Trajectron):
                                             all_z_sep=all_z_sep)
                 all_models_predictions.append(predictions)
                 encoded_inputs.append(encoded_input)
-                if (self.ensemble_method == 'boost') or (self.ensemble_method == 'gradboost'):
+                if (self.ensemble_method == 'boost') or (self.ensemble_method == 'gradboost') or (self.ensemble_method == 'bag' and both_gmm):
                     gmm_params_prod = model.gmm_params # model's p_y_xz to use (prev) gmm_params_prod * new predicted gmm
 
             if all_models_predictions == []:
                 continue
-            aggregated_ensemble_predictions = self.aggregation_func(all_models_predictions, 
-                                                                    encoded_inputs, node_type, 
-                                                                    predict=True)
-            # aggregated_ensemble_predictions = all_models_predictions[-1] # when combining smartly, pick last model (has all combined info) and always do gmm_params_prod
+            if (self.ensemble_method == 'bag' and both_gmm):
+                aggregated_ensemble_predictions = all_models_predictions[-1] # when combining bag smartly, pick last model (has all combined info) and always do gmm_params_prod
+            else:
+                aggregated_ensemble_predictions = self.aggregation_func(all_models_predictions, 
+                                                                        encoded_inputs, node_type, 
+                                                                        predict=True)
             predictions_np = aggregated_ensemble_predictions.cpu().detach().numpy()
 
             # Assign predictions to node

@@ -162,6 +162,7 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
         self.device = device
         self.edge_types = [edge_type for edge_type in edge_types if edge_type[0] is node_type]
         self.curr_iter = 0
+        self.both_gmm = False
 
         self.node_modules = dict()
 
@@ -630,7 +631,8 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
             (log_pis, mus, log_sigmas, corrs) = combined_gmm_params
 
         self.gmm_params = (log_pis.detach(), mus.detach(), log_sigmas.detach(), corrs.detach())
-        # num_components = log_pis.shape[-1] # changes if we're doing both_gmm_params
+        if self.both_gmm:
+            num_components = log_pis.shape[-1] # changes if we're doing both_gmm_params
         ###-------------------
 
         a_dist = GMM2D(torch.reshape(log_pis, [num_samples, -1, ph, num_components]),
