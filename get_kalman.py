@@ -165,8 +165,10 @@ if __name__ == "__main__":
         max_hl = hyperparams['maximum_history_length']
 
         with torch.no_grad():
-            ############### MOST LIKELY Z ###############
+            ############### KALMAN MOST LIKELY FDE ###############
             kalman_errors = np.array([])
+            mink = 20
+            eval_fde_batch_errors = np.array([])
 
             print("-- Evaluating GMM Z Mode (Most Likely)")
             for scene in tqdm(scenes):
@@ -180,8 +182,56 @@ if __name__ == "__main__":
                                                final_timestep=args.prediction_horizon[0])  # This will trigger grid sampling
                 if errors is not None:
                     kalman_errors = np.hstack((kalman_errors, errors))
+
+                minFDE
+                predictions = eval_stg.predict(scene,
+                                               timesteps,
+                                               ph,
+                                               num_samples=mink,
+                                               min_future_timesteps=8,
+                                               z_mode=False,
+                                               gmm_mode=False,
+                                               full_dist=False)
+                if not predictions:
+                    continue
+                batch_error_dict = evaluation.compute_batch_statistics(predictions,
+                                                                       scene.dt,
+                                                                       max_hl=max_hl,
+                                                                       ph=ph,
+                                                                       node_type_enum=env.NodeType,
+                                                                       map=None,
+                                                                       prune_ph_to_future=False)
+                fdes = np.array(batch_error_dict[args.node_type]['fde']).reshape(-1,mink)
+                minFDE_errors = np.min(fdes, axis=1)
+                eval_fde_batch_errors = np.hstack((eval_fde_batch_errors, minFDE_errors))
+
+                # #mlFDE
+                # predictions = eval_stg.predict(scene,
+                #                                timesteps,
+                #                                ph,
+                #                                num_samples=1,
+                #                                min_future_timesteps=8,
+                #                                z_mode=True,
+                #                                gmm_mode=True,
+                #                                full_dist=False)  # This will trigger grid sampling
+                # batch_error_dict = evaluation.compute_batch_statistics(predictions,
+                #                                                        scene.dt,
+                #                                                        max_hl=max_hl,
+                #                                                        ph=ph,
+                #                                                        node_type_enum=env.NodeType,
+                #                                                        map=None,
+                #                                                        prune_ph_to_future=False,
+                #                                                        kde=False)
+                # eval_fde_batch_errors = np.hstack((eval_fde_batch_errors, batch_error_dict[args.node_type]['fde']))
+
+
             print(len(kalman_errors))
             pd.DataFrame({'value': kalman_errors, 'metric': 'fde', 'type': 'ml'}
                          ).to_csv(os.path.join(args.output_path, args.output_tag + "_" + str(ph) + '_kalman_errors.csv'))
-            print(np.mean(kalman_errors))
+            
+            print(len(eval_fde_batch_errors))
+            pd.DataFrame({'value': eval_fde_batch_errors, 'metric': 'fde', 'type': 'min{}'.format(mink)}
+                        ).to_csv(os.path.join(args.output_path, args.output_tag + "_" + str(ph) + '_fde_mink_errors.csv'))
+            # pd.DataFrame({'value': eval_fde_batch_errors, 'metric': 'fde', 'type': 'ml'}
+            #              ).to_csv(os.path.join(args.output_path, args.output_tag + "_" + str(ph) + '_fde_most_likely_z.csv'))
 
