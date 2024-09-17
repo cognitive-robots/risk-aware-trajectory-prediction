@@ -60,11 +60,11 @@ def load_model(model_dir, env, ts=100):
         hyperparams = json.load(config_json)
 
     trajectron = TrajectronRisk(model_registrar, hyperparams, None, 'cpu')
+    trajectron.set_environment(env, NUM_ENSEMBLE)
     aggregation_model = None
     if 'stack' in args.ensemble_method:
-        aggregation_model = create_stacking_model(env, model_registrar, trajectron.get_x_size(), args.device, NUM_ENSEMBLE)
+        aggregation_model = create_stacking_model(env, model_registrar, trajectron.get_x_size(), 'cpu', NUM_ENSEMBLE)
 
-    trajectron.set_environment(env, NUM_ENSEMBLE)
     trajectron.set_aggregation(args.ensemble_method, agg_models=aggregation_model)
     trajectron.set_annealing_params()
     return trajectron, hyperparams
