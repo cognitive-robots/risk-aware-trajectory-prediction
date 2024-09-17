@@ -165,7 +165,7 @@ def main():
                                                      collate_fn=collate,
                                                      pin_memory=False if args.device is 'cpu' else True,
                                                      batch_size=args.batch_size,
-                                                     shuffle=True,
+                                                     shuffle=False,
                                                      num_workers=args.preprocess_workers)
         #THIS HAS THE UNFILTERED
         train_data_loader[node_type_data_set.node_type] = node_type_dataloader
