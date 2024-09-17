@@ -112,11 +112,18 @@ class TrajectronRisk(Trajectron):
         
         if predict:
             predictions = losses # just indicating that if predict is true, the losses are actually predictions
-            sum_preds = torch.zeros(predictions[0].shape).to(self.device)
-            for i in range(self.num_models):
-                for j in range(model_output.shape[0]): # per example in batch
-                    sum_preds[:,j,:,:] += predictions[i][:,j,:,:]*model_output[j,i]
-            return sum_preds / model_output.sum() # return normalized weighted average of predictions
+            # sum_preds = torch.zeros(predictions[0].shape).to(self.device)
+            # for i in range(self.num_models):
+            #     for j in range(model_output.shape[0]): # per example in batch
+            #         sum_preds[:,j,:,:] += predictions[i][:,j,:,:]*model_output[j,i]
+            # return sum_preds / model_output.sum() # return normalized weighted average of predictions
+            model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
+            if self.num_models == 1:
+                return predictions[0]
+            agg_preds = torch.zeros(predictions[0].shape).to(self.device)
+            for i in range(model_output.shape[0]): # per example in batch
+                agg_preds[:,i,:,:] = predictions[model_inference[i]][:,i,:,:] # ith example gets predictions from chosen ens at i
+            return agg_preds 
 
         # do a weighted average of losses, weighted by model_output
         losses_stacked = torch.stack(losses, dim=1)
