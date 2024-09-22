@@ -146,4 +146,5 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
                                        self.curr_iter)
             if self.hyperparams['log_histograms']:
                 self.latent.summarize_for_tensorboard(self.log_writer, str(self.node_type), self.curr_iter)
-        return loss
+        log_p_y_xz_mean, self.kl_weight * kl, 1. * mutual_inf_p
+        # return loss

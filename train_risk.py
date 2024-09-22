@@ -25,6 +25,18 @@ from model.dataset import collate
 from tensorboardX import SummaryWriter
 # torch.autograd.set_detect_anomaly(True)
 
+def top_n_percent(arr, n):
+    k = int(np.ceil(len(arr) * (100-n) / 100))
+    inds = np.argpartition(arr, k)[k:]
+    return inds
+
+def loss_pt2(log_p_y_xz_mean, kl_term, inf_term):
+    log_likelihood = torch.mean(log_p_y_xz_mean)
+
+    ELBO = log_likelihood - kl_term + inf_term
+    loss = -ELBO
+    return loss
+
 if not torch.cuda.is_available() or args.device == 'cpu':
     args.device = torch.device('cpu')
 else:
@@ -165,7 +177,7 @@ def main():
                                                      collate_fn=collate,
                                                      pin_memory=False if args.device is 'cpu' else True,
                                                      batch_size=args.batch_size,
-                                                     shuffle=True,
+                                                     shuffle=False,
                                                      num_workers=args.preprocess_workers)
         #THIS HAS THE UNFILTERED
         train_data_loader[node_type_data_set.node_type] = node_type_dataloader
@@ -268,6 +280,7 @@ def main():
     #################################
     #           TRAINING            #
     #################################
+    keep_indices_dict = {}
     curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
     for epoch in range(1, args.train_epochs + 1):
         model_registrar.to(args.device)
@@ -275,17 +288,21 @@ def main():
         for node_type, data_loader in train_data_loader.items():
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
-            # REMOVE_LATER = 0
-            for batch in pbar:
-                # if REMOVE_LATER > 5:
-                #     break;
-                # REMOVE_LATER += 1   
+            REMOVE_LATER = 0
+            for i, batch in enumerate(pbar):
+                if i not in keep_indices_dict: keep_indices_dict[i] = list(range(batch[0].shape[0]))
+                if REMOVE_LATER > 1:
+                    break;
+                REMOVE_LATER += 1   
                 trajectron.set_curr_iter(curr_iter)
                 trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
-                # -------- ADDED HEATMAP_TENSOR -------
-                train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor, 
+                # -------- ADDED -------
+                per_ex_loss, kl_term, inf_term = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor, 
                     loc_risk=args.location_risk, no_stat=args.no_stationary)
+                
+                
+                train_loss = loss_pt2(per_ex_loss, kl_term, inf_term)
                 # -------------------------------------
                 pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
                 train_loss.backward()

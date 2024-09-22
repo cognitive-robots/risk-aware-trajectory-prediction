@@ -173,4 +173,13 @@ parser.add_argument('--no_stationary',
                     action='store_true')
 parser.add_argument('--location_risk',
                     action='store_true')
+parser.add_argument('--drop_percentages',
+                    nargs='+',
+                    help="how much of the data to keep for next epoch",
+                    type=float,
+                    default=[0.1]) # We don't automatically pad left with 0.0, if you want a sharp
+                                                    # and short edge addition, then you need to have a 0.0 at the
+                                                    # beginning, e.g. [0.0, 1.0].
+
+
 args = parser.parse_args()
