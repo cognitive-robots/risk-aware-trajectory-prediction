@@ -10,7 +10,7 @@ import pandas as pd
 sys.path.append("./Trajectron-plus-plus/trajectron")
 from tqdm import tqdm
 from model.model_registrar import ModelRegistrar
-from model.trajectron import Trajectron
+from trajectron_risk import TrajectronRisk, create_stacking_model
 import evaluation
 import utils
 from scipy.interpolate import RectBivariateSpline
@@ -28,7 +28,9 @@ parser.add_argument("--data", help="full path to data file", type=str)
 parser.add_argument("--output_path", help="path to output csv file", type=str)
 parser.add_argument("--output_tag", help="name tag for output file", type=str)
 parser.add_argument("--node_type", help="node type to evaluate", type=str)
+parser.add_argument("--ensemble_method", help="'bag' 'stack' 'boost' 'gradboost' or 'clusterstack'", type=str)
 parser.add_argument("--prediction_horizon", nargs='+', help="prediction horizon", type=int, default=None)
+parser.add_argument("--num_ensemble", nargs='+', help="list model names", type=int, default=None)
 args = parser.parse_args()
 
 
@@ -56,9 +58,12 @@ def load_model(model_dir, env, ts=100):
     with open(os.path.join(model_dir, 'config.json'), 'r') as config_json:
         hyperparams = json.load(config_json)
 
-    trajectron = Trajectron(model_registrar, hyperparams, None, 'cpu')
-
-    trajectron.set_environment(env)
+    trajectron = TrajectronRisk(model_registrar, hyperparams, None, 'cpu')
+    trajectron.set_environment(env, args.num_ensemble)
+    aggregation_model = None
+    if 'stack' in args.ensemble_method:
+        aggregation_model = create_stacking_model(env, model_registrar, trajectron.get_x_size(), 'cpu', args.num_ensemble)
+    trajectron.set_aggregation(args.ensemble_method, agg_models=aggregation_model)
     trajectron.set_annealing_params()
     return trajectron, hyperparams
 

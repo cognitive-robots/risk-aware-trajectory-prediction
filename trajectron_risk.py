@@ -63,6 +63,7 @@ class TrajectronRisk(Trajectron):
                     self.clusters[node_type] = None
                     model_instance = MultimodalGenerativeCVAERisk(env,
                                                         node_type,
+                                                        ens_index,
                                                         self.model_registrar,
                                                         self.hyperparams,
                                                         self.device,
@@ -215,7 +216,7 @@ class TrajectronRisk(Trajectron):
         if robot_traj_st_t is not None:
             robot_traj_st_t = robot_traj_st_t.to(self.device)
         if type(map) == torch.Tensor:
-            map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise (randgaussmapnoise)
+            # map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise (randgaussmapnoise)
             map = map.to(self.device)
 
         if self.ensemble_method == 'gradboost':
