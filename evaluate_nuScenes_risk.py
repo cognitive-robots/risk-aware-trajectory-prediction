@@ -60,9 +60,18 @@ def load_model(model_dir, env, ts=100):
 
     trajectron = TrajectronRisk(model_registrar, hyperparams, None, 'cpu')
     trajectron.set_environment(env, args.num_ensemble)
+
+    # create aggregation model for stacking
     aggregation_model = None
     if 'stack' in args.ensemble_method:
-        aggregation_model = create_stacking_model(env, model_registrar, trajectron.get_x_size(), 'cpu', args.num_ensemble)
+        num_models = len(args.num_ensemble)
+        x_size = trajectron.x_size 
+        z_dim = trajectron.z_dim
+        zx_dim = trajectron.zx_dim
+        input_multiplier = 1 if 'cluster' in args.ensemble_method else num_models
+        input_dims = zx_dim if 'cluster' in args.ensemble_method else x_size
+        aggregation_model = create_stacking_model(env, model_registrar, input_dims, 
+                                                  'cpu', input_multiplier, num_models)
     trajectron.set_aggregation(args.ensemble_method, agg_models=aggregation_model)
     trajectron.set_annealing_params()
     return trajectron, hyperparams
