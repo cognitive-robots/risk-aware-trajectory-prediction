@@ -11,7 +11,7 @@ sys.path.append("./Trajectron-plus-plus/trajectron")
 from tqdm import tqdm
 from model.model_registrar import ModelRegistrar
 from model.trajectron import Trajectron
-from trajectron_risk import TrajectronRisk
+from trajectron_risk import TrajectronRisk, create_stacking_model
 import evaluation
 import utils
 from scipy.interpolate import RectBivariateSpline
