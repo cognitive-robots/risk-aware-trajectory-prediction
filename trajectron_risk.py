@@ -125,16 +125,12 @@ class TrajectronRisk(Trajectron):
     def clusterstacking(self, target, encoded_inputs, node_type, eval=False, predict=False): # losses is either losses or predictions
         # device = self.agg_models[self.env.NodeType[0]][0].weight.device
         model_input = encoded_inputs.to(self.device)
-        model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
-        model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
-        model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
-        if eval:
-            # if features are zx not x:
-            inds_per_mode = model_inference.reshape(-1, target[0].shape[0]).transpose(0,1)
-            inds = torch.mode(inds_per_mode).values
-            losses_stacked = torch.stack(target)
-            return losses_stacked[inds, range(len(inds))] # return predictions of most probably correct model
+
         if predict: # 20 samples answers coming from same mode
+            self.agg_models[node_type].eval()
+            model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
+            model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
+            model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
             # if features are zx not x:
             predictions = target
             inds_per_mode = model_inference.reshape(-1, target[1].shape[1]).transpose(0,1)
@@ -144,6 +140,16 @@ class TrajectronRisk(Trajectron):
                 ind = inds[i]
                 ret[:,i,:,:] = predictions[ind][:,i,:,:]
             return ret 
+
+        model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
+        model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
+        model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
+        if eval:
+            # if features are zx not x:
+            inds_per_mode = model_inference.reshape(-1, target[0].shape[0]).transpose(0,1)
+            inds = torch.mode(inds_per_mode).values
+            losses_stacked = torch.stack(target)
+            return losses_stacked[inds, range(len(inds))] # return predictions of most probably correct model
         # if predict: # 20 samples answers coming from different modes
         #     # if features are zx not x:
         #     predictions = target
