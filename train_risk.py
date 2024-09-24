@@ -28,6 +28,7 @@ wandb.login()
 # torch.autograd.set_detect_anomaly(True)
 args.vis_every = None # not using it atm
 NUM_ENSEMBLE = [0, 1, 2]
+CLUSTERSTACK_EPOCH = 10
 
 # Define sweep config
 # sweep_configuration = {
@@ -301,6 +302,8 @@ def main():
         input_dims = zx_dim if 'cluster' in args.ensemble_method else x_size
         aggregation_model = create_stacking_model(train_env, model_registrar, input_dims, 
                                                   args.device, input_multiplier, num_models)
+        if 'cluster' in args.ensemble_method:
+            trajectron.clusterstack_epoch = CLUSTERSTACK_EPOCH
 
     trajectron.set_aggregation(args.ensemble_method,
             agg_models=aggregation_model, percentage=percentage, eta=eta)
@@ -349,7 +352,7 @@ def main():
             wandb.log({"epoch{}".format(label): epoch})
             model_registrar.to(args.device)
             train_dataset.augment = args.augment
-            if args.ensemble_method == 'clusterstack':
+            if args.ensemble_method == 'clusterstack' and epoch == CLUSTERSTACK_EPOCH:
                 for node_type, data_loader in train_data_loader.items():
                     curr_iter = curr_iter_node_type[node_type]
                     pbar = tqdm(data_loader, ncols=80)

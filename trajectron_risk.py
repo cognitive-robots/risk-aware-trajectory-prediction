@@ -360,6 +360,30 @@ class TrajectronRisk(Trajectron):
             return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf)
 
         if self.ensemble_method == 'clusterstack':
+            if epoch < self.clusterstack_epoch:
+                # loss for every model, average model losses
+                losses = []
+                for ens_index in self.num_ensemble: # for each model in ensemble
+                    # Run forward pass
+                    model = self.node_models_dict[ens_index][node_type]
+                    loss = model.train_loss(inputs=x,
+                                            inputs_st=x_st_t,
+                                            first_history_indices=first_history_index,
+                                            labels=y,
+                                            labels_st=y_st_t,
+                                            neighbors=restore(neighbors_data_st),
+                                            neighbors_edge_value=restore(neighbors_edge_value),
+                                            robot=robot_traj_st_t,
+                                            map=map,
+                                            prediction_horizon=self.ph,
+                                            heatmap_tensor=heatmap_tensor,
+                                            x_unf=x_unf,
+                                            map_name=map_name,
+                                            grid_tensor=grid_tensor)
+                    losses.append(loss)
+                ret = self.bagging(losses)
+                return ret
+
             # approach is: 1 encoder, many decoders
 
             # Encoder
