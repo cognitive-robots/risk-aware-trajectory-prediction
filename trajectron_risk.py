@@ -19,6 +19,8 @@ INCR_ETA = False
 STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 stacking_model_eta = 0.1 # for stack or stackboost
 
+CLUSTERSTACK_EPOCH = 10
+
 def create_stacking_model(env, model_registrar, input_dims, device, input_multiplier, num_models):
     models = {}
     for node_type in env.NodeType:
@@ -358,6 +360,30 @@ class TrajectronRisk(Trajectron):
             return train_loss_pt2(aggregated, aggregated_kl, aggregated_inf)
 
         if self.ensemble_method == 'clusterstack':
+            if epoch < CLUSTERSTACK_EPOCH:
+                # loss for every model, average model losses
+                losses = []
+                for ens_index in self.num_ensemble: # for each model in ensemble
+                    # Run forward pass
+                    model = self.node_models_dict[ens_index][node_type]
+                    loss = model.train_loss(inputs=x,
+                                            inputs_st=x_st_t,
+                                            first_history_indices=first_history_index,
+                                            labels=y,
+                                            labels_st=y_st_t,
+                                            neighbors=restore(neighbors_data_st),
+                                            neighbors_edge_value=restore(neighbors_edge_value),
+                                            robot=robot_traj_st_t,
+                                            map=map,
+                                            prediction_horizon=self.ph,
+                                            heatmap_tensor=heatmap_tensor,
+                                            x_unf=x_unf,
+                                            map_name=map_name,
+                                            grid_tensor=grid_tensor)
+                    losses.append(loss)
+                ret = self.bagging(losses)
+                return ret
+
             # approach is: 1 encoder, many decoders
 
             # Encoder
@@ -384,12 +410,17 @@ class TrajectronRisk(Trajectron):
             zx_features = torch.cat([z_example_per_mode, x.repeat(self.z_dim[node_type], 1)], dim=1)       
             whitened = whiten(zx_features.cpu().detach().numpy())
 
-            if self.clusters[node_type] is None:
-                centroid, stacking_label = kmeans2(whitened, k=self.num_models, iter=10)
-            else: 
-                centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=10)
-            self.clusters[node_type] = centroid
-            target = torch.tensor(stacking_label)
+            if epoch == CLUSTERSTACK_EPOCH:
+                if self.clusters[node_type] is None:
+                    centroid, stacking_label = kmeans2(whitened, k=self.num_models, iter=100)
+                else: 
+                    centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=100)
+                self.clusters[node_type] = centroid
+                target = torch.tensor(stacking_label)
+            elif epoch > CLUSTERSTACK_EPOCH:
+                # just calculate labels based on self.clusters
+                code, dist = vq(whitened, self.clusters[node_type])
+                target = torch.tensor(code)
 
             # # if features are x, not zx:
             # target_per_mode = target.reshape(self.z_dim[node_type], -1).transpose(0,1)
