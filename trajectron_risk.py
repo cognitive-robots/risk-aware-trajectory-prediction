@@ -759,14 +759,14 @@ class TrajectronRisk(Trajectron):
     def cluster_init(self, node_type, batch_size):
         if self.clusters[node_type] is None:
             minibatch_kmeans = MiniBatchKMeans(n_clusters=self.num_models,
-                                    max_iter=10,
+                                    max_iter=100,
                                     # random_state=0, # seed - use for debugging if needed
                                     batch_size=batch_size,
                                     n_init=1)
         else:
             minibatch_kmeans = MiniBatchKMeans(n_clusters=self.num_models,
                                     init=self.clusters[node_type],
-                                    max_iter=10,
+                                    max_iter=100,
                                     # random_state=0, # seed - use for debugging if needed
                                     batch_size=batch_size,
                                     n_init=1)
