@@ -21,18 +21,19 @@ STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 stacking_model_eta = 0.1 # for stack or stackboost
 vicreg_eta = 0
 
-def create_stacking_model(env, input_dims, device, input_multiplier, num_models):
+def create_stacking_model(env, model_registrar, input_dims, device, input_multiplier, num_models):
     models = {}
     for node_type in env.NodeType:
         input_layer_size = input_dims[node_type]*input_multiplier
         output_layer_size = num_models
         hidden_layer_size =  input_layer_size
-        models[node_type] = nn.Sequential(
+        model_if_absent = nn.Sequential(
                                 nn.Linear(input_layer_size, hidden_layer_size).to(device),
                                 nn.BatchNorm1d(hidden_layer_size).to(device),
                                 nn.ReLU(),
                                 nn.Linear(hidden_layer_size, output_layer_size).to(device)
                                 )
+        models[node_type] = model_registrar.get_model(str(node_type) + '/stacking_model', model_if_absent)
     return models
 
 def mask_neighbors(neighbors, cond): #cond is an if condition like (mask == ens_index)
@@ -97,6 +98,7 @@ class TrajectronRisk(Trajectron):
                     self.clusters[node_type] = None
                     model_instance = MultimodalGenerativeCVAERisk(env,
                                                         node_type,
+                                                        ens_index,
                                                         self.model_registrar,
                                                         self.hyperparams,
                                                         self.device,
@@ -157,16 +159,11 @@ class TrajectronRisk(Trajectron):
     def clusterstacking(self, target, encoded_inputs, node_type, eval=False, predict=False): # losses is either losses or predictions
         # device = self.agg_models[self.env.NodeType[0]][0].weight.device
         model_input = encoded_inputs.to(self.device)
-        model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
-        model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
-        model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
-        if eval:
-            # if features are zx not x:
-            inds_per_mode = model_inference.reshape(-1, target[0].shape[0]).transpose(0,1)
-            inds = torch.mode(inds_per_mode).values
-            losses_stacked = torch.stack(target)
-            return losses_stacked[inds, range(len(inds))] # return predictions of most probably correct model
         if predict:
+            self.agg_models[node_type].eval()
+            model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
+            model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
+            model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
             # if features are zx not x:
             predictions = target
             inds_per_sample = model_inference.reshape(-1, target[0].shape[1])
@@ -176,6 +173,15 @@ class TrajectronRisk(Trajectron):
                     ind = inds_per_sample[i, j]
                     ret[i,j,:,:] = predictions[ind][i,j,:,:]
             return ret 
+        model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
+        model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
+        model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
+        if eval:
+            # if features are zx not x:
+            inds_per_mode = model_inference.reshape(-1, target[0].shape[0]).transpose(0,1)
+            inds = torch.mode(inds_per_mode).values
+            losses_stacked = torch.stack(target)
+            return losses_stacked[inds, range(len(inds))] # return predictions of most probably correct model
         loss = nn.CrossEntropyLoss()
 
         self.stacking_model_loss = loss(model_output, target.to(self.device)) * self.stack_eta

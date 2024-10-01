@@ -10,7 +10,7 @@ import pandas as pd
 sys.path.append("./Trajectron-plus-plus/trajectron")
 from tqdm import tqdm
 from model.model_registrar import ModelRegistrar
-from model.trajectron import Trajectron
+from trajectron_risk import TrajectronRisk, create_stacking_model
 import evaluation
 import utils
 from scipy.interpolate import RectBivariateSpline
@@ -28,7 +28,9 @@ parser.add_argument("--data", help="full path to data file", type=str)
 parser.add_argument("--output_path", help="path to output csv file", type=str)
 parser.add_argument("--output_tag", help="name tag for output file", type=str)
 parser.add_argument("--node_type", help="node type to evaluate", type=str)
+parser.add_argument("--ensemble_method", help="'bag' 'stack' 'boost' 'gradboost' or 'clusterstack'", type=str)
 parser.add_argument("--prediction_horizon", nargs='+', help="prediction horizon", type=int, default=None)
+parser.add_argument("--num_ensemble", nargs='+', help="list model names", type=int, default=None)
 args = parser.parse_args()
 
 
@@ -56,9 +58,23 @@ def load_model(model_dir, env, ts=100):
     with open(os.path.join(model_dir, 'config.json'), 'r') as config_json:
         hyperparams = json.load(config_json)
 
-    trajectron = Trajectron(model_registrar, hyperparams, None, 'cpu')
-
-    trajectron.set_environment(env)
+    trajectron = TrajectronRisk(model_registrar, hyperparams, None, 'cpu')
+    trajectron.set_environment(env, args.num_ensemble)
+    # create aggregation model for stacking
+    aggregation_model = None
+    if 'stack' in args.ensemble_method:
+        num_models = len(args.num_ensemble)
+        x_size = trajectron.x_size 
+        z_dim = trajectron.z_dim
+        zx_dim = trajectron.zx_dim
+        feat_dim = {}
+        for node_type in env.NodeType:
+            feat_dim[node_type] = hyperparams['map_encoder'][node_type]['output_size']
+        input_multiplier = 1 if 'cluster' in args.ensemble_method else num_models
+        input_dims = feat_dim if 'cluster' in args.ensemble_method else x_size
+        aggregation_model = create_stacking_model(env, model_registrar, input_dims, 
+                                                  args.device, input_multiplier, num_models)
+    trajectron.set_aggregation(args.ensemble_method, agg_models=aggregation_model)
     trajectron.set_annealing_params()
     return trajectron, hyperparams
 
