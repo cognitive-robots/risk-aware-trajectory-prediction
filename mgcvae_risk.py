@@ -184,7 +184,7 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
         dynamic_class = getattr(dynamic_module, hyperparams['dynamic'][self.node_type_str]['name'])
         dyn_limits = hyperparams['dynamic'][self.node_type_str]['limits']
         self.dynamic = dynamic_class(self.env.scenes[0].dt, dyn_limits, device,
-                                     self.model_registrar, self.x_size, self.node_type)
+                                     self.model_registrar, self.x_size, self.node_type_str)
 
 
     def create_node_models(self):
@@ -267,7 +267,7 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
         #   Map Encoder   #
         ###################
         if self.hyperparams['use_map_encoding']:
-            if self.node_type in self.hyperparams['map_encoder']:
+            if self.node_type_str in self.hyperparams['map_encoder']:
                 me_params = self.hyperparams['map_encoder'][self.node_type_str]
                 self.add_submodule(self.node_type + '/map_encoder',
                                    model_if_absent=CNNMapEncoder(me_params['map_channels'],
@@ -293,7 +293,7 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
         if self.hyperparams['incl_robot_node']:
             #              Future Conditional Encoder
             x_size += 4 * self.hyperparams['enc_rnn_dim_future']
-        if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
+        if self.hyperparams['use_map_encoding'] and self.node_type_str in self.hyperparams['map_encoder']:
             #              Map Encoder
             x_size += self.hyperparams['map_encoder'][self.node_type_str]['output_size']
 
@@ -470,7 +470,7 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
         ################
         # Map Encoding #
         ################
-        if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
+        if self.hyperparams['use_map_encoding'] and self.node_type_str in self.hyperparams['map_encoder']:
             if self.log_writer and (self.curr_iter + 1) % 500 == 0:
                 map_clone = map.clone()
                 map_patch = self.hyperparams['map_encoder'][self.node_type_str]['patch_size']
@@ -498,7 +498,7 @@ class MultimodalGenerativeCVAERisk(MultimodalGenerativeCVAE):
             robot_future_encoder = self.encode_robot_future(mode, x_r_t, y_r)
             x_concat_list.append(robot_future_encoder)
 
-        if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
+        if self.hyperparams['use_map_encoding'] and self.node_type_str in self.hyperparams['map_encoder']:
             if self.log_writer:
                 self.log_writer.add_scalar(f"{self.node_type}/encoded_map_max",
                                            torch.max(torch.abs(encoded_map)), self.curr_iter)
