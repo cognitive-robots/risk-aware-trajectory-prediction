@@ -707,3 +707,124 @@ class TrajectronRisk(Trajectron):
 
             average_batch_vel = np.mean(vel_array)
         return average_batch_vel
+
+    
+    def viz_clusters(self,
+                scene,
+                timesteps,
+                ph,
+                last_model_index = None, 
+                num_samples=1,
+                min_future_timesteps=0,
+                min_history_timesteps=1,
+                z_mode=False,
+                gmm_mode=False,
+                full_dist=True,
+                all_z_sep=False):
+        
+        up_to_model = None
+        if last_model_index:
+            up_to_model = last_model_index + 1
+        num_ensemble_subset = self.num_ensemble[:up_to_model] #should be all the models up to and including last_model_index, if None, all models
+        predictions_dict = {}
+        for node_type in self.env.NodeType:
+            if node_type not in self.pred_state:
+                continue
+            all_models_predictions = []
+            encoded_inputs = []
+            gmm_params_prod = None
+            clusterstack_encoder_output = None
+            for ens_index in num_ensemble_subset: # for each model in ensemble
+
+                model = self.node_models_dict[ens_index][node_type]
+                model.prev_gmm_params = gmm_params_prod # None for all except boost
+
+                # Get Input data for node type and given timesteps
+                batch = get_timesteps_data(env=self.env, scene=scene, t=timesteps, node_type=node_type, state=self.state,
+                                        pred_state=self.pred_state, edge_types=model.edge_types,
+                                        min_ht=min_history_timesteps, max_ht=self.max_ht, min_ft=min_future_timesteps,
+                                        max_ft=min_future_timesteps, hyperparams=self.hyperparams)
+                # There are no nodes of type present for timestep
+                if batch is None:
+                    # print('BATCH IS NONE')
+                    continue
+                (first_history_index,
+                x_t, y_t, x_st_t, y_st_t,
+                neighbors_data_st,
+                neighbors_edge_value,
+                robot_traj_st_t,
+                map,
+                #--------------ADDED--------------
+                x_unf_t,
+                map_name
+                #---------------------------------
+                ), nodes, timesteps_o = batch
+
+                x = x_t.to(self.device)
+                x_st_t = x_st_t.to(self.device)
+                if robot_traj_st_t is not None:
+                    robot_traj_st_t = robot_traj_st_t.to(self.device)
+                if type(map) == torch.Tensor:
+                    map = map.to(self.device)
+
+                # Run forward pass
+                encoder_output, predictions = model.predict(inputs=x,
+                                            inputs_st=x_st_t,
+                                            first_history_indices=first_history_index,
+                                            neighbors=neighbors_data_st,
+                                            neighbors_edge_value=neighbors_edge_value,
+                                            robot=robot_traj_st_t,
+                                            map=map,
+                                            prediction_horizon=ph,
+                                            num_samples=num_samples,
+                                            z_mode=z_mode,
+                                            gmm_mode=gmm_mode,
+                                            full_dist=full_dist,
+                                            all_z_sep=all_z_sep)
+                x = encoder_output[0]
+                z = encoder_output[-1]
+                all_models_predictions.append(predictions)
+                encoded_inputs.append(x)
+                if (self.ensemble_method == 'clusterstack') and ens_index == 0:
+                    clusterstack_encoder_output = encoder_output
+
+                if (self.ensemble_method == 'boost') or (self.ensemble_method == 'gradboost'):
+                    gmm_params_prod = model.gmm_params # model's p_y_xz to use (prev) gmm_params_prod * new predicted gmm
+
+            if all_models_predictions == []:
+                continue
+
+            features = encoded_inputs
+            if (self.ensemble_method == 'clusterstack'):
+                x = clusterstack_encoder_output[0]
+                z = clusterstack_encoder_output[-1]
+
+                # if features are zx not x:
+                z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
+                features = torch.cat([z_example_per_mode, x.repeat(z.shape[0], 1)], dim=1) 
+            
+                self.agg_models[node_type].eval()
+                model_output = self.agg_models[node_type](features) + 0.00001 # to keep from getting nans, [256]
+                model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
+                model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]
+                
+                # if features are zx not x:
+                predictions = all_models_predictions
+                inds_per_sample = model_inference.reshape(-1, predictions[0].shape[1])
+                ret = torch.zeros(predictions[0].shape).to(self.device)
+                for i in range(inds_per_sample.shape[0]):
+                    for j in range(inds_per_sample.shape[1]): # per example in batch
+                        ind = inds_per_sample[i, j]
+                        ret[i,j,:,:] = predictions[ind][i,j,:,:]
+                aggregated_ensemble_predictions = ret
+            
+            predictions_np = aggregated_ensemble_predictions.cpu().detach().numpy()
+
+            # Assign predictions to node
+            for i, ts in enumerate(timesteps_o):
+                if ts not in predictions_dict.keys():
+                    predictions_dict[ts] = dict()
+                predictions_dict[ts][nodes[i]] = np.transpose(predictions_np[:, [i]], (1, 0, 2, 3))
+                import pdb; pdb.set_trace()
+
+        return predictions_dict
