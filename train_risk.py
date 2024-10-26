@@ -27,7 +27,7 @@ import wandb
 wandb.login()
 # torch.autograd.set_detect_anomaly(True)
 args.vis_every = None # not using it atm
-NUM_ENSEMBLE = [0, 1, 2]
+NUM_ENSEMBLE = list(range(3))
 
 # Define sweep config
 # sweep_configuration = {
