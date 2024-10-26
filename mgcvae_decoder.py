@@ -290,7 +290,7 @@ class MultimodalGenerativeCVAEDecoder(MultimodalGenerativeCVAE):
                                             num_components,
                                             gmm_mode)
 
-        return encoder_output, our_sampled_future
+        return our_sampled_future
 
 def train_loss_pt2(log_p_y_xz_mean, kl_term, inf_term):
     log_likelihood = torch.mean(log_p_y_xz_mean)

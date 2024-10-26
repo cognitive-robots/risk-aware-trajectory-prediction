@@ -67,7 +67,7 @@ class TrajectronRisk(Trajectron):
                 # 1 encoder
                 encoder = MultimodalGenerativeCVAEEncoder(env,
                                                     node_type,
-                                                    ens_index,
+                                                    '_encoder',
                                                     self.model_registrar,
                                                     self.hyperparams,
                                                     self.device,
@@ -282,8 +282,8 @@ class TrajectronRisk(Trajectron):
             per_example_losses = [] # per-model likelihoods
             for ens_index in self.num_ensemble: # for each model in ensemble
                 # Run every model's decoder
-                model = self.node_models_dict[node_type][ens_index]            
-                per_example_likelihood, kl_term, inf_term = model.train_loss_decode_pt1(
+                decoder = self.node_models_dict[node_type][ens_index]            
+                per_example_likelihood, kl_term, inf_term = decoder.train_loss_decode_pt1(
                                                             z, kl, input_embedding, dists,
                                                             labels=y, 
                                                             prediction_horizon=self.ph)
@@ -320,8 +320,8 @@ class TrajectronRisk(Trajectron):
             
         if self.ensemble_method == 'clusterstack':
             # Encoder
-            model = self.node_models_dict[node_type][0] # only the first model's encoder is used
-            z, input_embedding, dists = model.eval_loss_encode(
+            encoder = self.node_models_dict[node_type]['encoder'] 
+            z, input_embedding, dists = encoder.eval_loss_encode(
                                     inputs=x,
                                     inputs_st=x_st_t,
                                     first_history_indices=first_history_index,
@@ -375,41 +375,53 @@ class TrajectronRisk(Trajectron):
             encoded_inputs = []
             gmm_params_prod = None
             clusterstack_encoder_output = None
+            # Encoder
+            encoder = self.node_models_dict[node_type]['encoder'] 
+            encoder_output = encoder.predict_encode(inputs=x,
+                                        inputs_st=x_st_t,
+                                        first_history_indices=first_history_index,
+                                        neighbors=neighbors_data_st,
+                                        neighbors_edge_value=neighbors_edge_value,
+                                        robot=robot_traj_st_t,
+                                        map=map,
+                                        prediction_horizon=ph,
+                                        num_samples=num_samples,
+                                        z_mode=z_mode,
+                                        gmm_mode=gmm_mode,
+                                        full_dist=full_dist,
+                                        all_z_sep=all_z_sep)
+            # Get Input data for node type and given timesteps
+            batch = get_timesteps_data(env=self.env, scene=scene, t=timesteps, node_type=node_type, state=self.state,
+                                    pred_state=self.pred_state, edge_types=encoder.edge_types,
+                                    min_ht=min_history_timesteps, max_ht=self.max_ht, min_ft=min_future_timesteps,
+                                    max_ft=min_future_timesteps, hyperparams=self.hyperparams)
+            # There are no nodes of type present for timestep
+            if batch is None:
+                # print('BATCH IS NONE')
+                continue
+            (first_history_index,
+            x_t, y_t, x_st_t, y_st_t,
+            neighbors_data_st,
+            neighbors_edge_value,
+            robot_traj_st_t,
+            map,
+            #--------------ADDED--------------
+            x_unf_t,
+            map_name
+            #---------------------------------
+            ), nodes, timesteps_o = batch
+
+            x = x_t.to(self.device)
+            x_st_t = x_st_t.to(self.device)
+            if robot_traj_st_t is not None:
+                robot_traj_st_t = robot_traj_st_t.to(self.device)
+            if type(map) == torch.Tensor:
+                map = map.to(self.device)
+
             for ens_index in num_ensemble_subset: # for each model in ensemble
-
-                model = self.node_models_dict[node_type][ens_index]
-                model.prev_gmm_params = gmm_params_prod # None for all except boost
-
-                # Get Input data for node type and given timesteps
-                batch = get_timesteps_data(env=self.env, scene=scene, t=timesteps, node_type=node_type, state=self.state,
-                                        pred_state=self.pred_state, edge_types=model.edge_types,
-                                        min_ht=min_history_timesteps, max_ht=self.max_ht, min_ft=min_future_timesteps,
-                                        max_ft=min_future_timesteps, hyperparams=self.hyperparams)
-                # There are no nodes of type present for timestep
-                if batch is None:
-                    # print('BATCH IS NONE')
-                    continue
-                (first_history_index,
-                x_t, y_t, x_st_t, y_st_t,
-                neighbors_data_st,
-                neighbors_edge_value,
-                robot_traj_st_t,
-                map,
-                #--------------ADDED--------------
-                x_unf_t,
-                map_name
-                #---------------------------------
-                ), nodes, timesteps_o = batch
-
-                x = x_t.to(self.device)
-                x_st_t = x_st_t.to(self.device)
-                if robot_traj_st_t is not None:
-                    robot_traj_st_t = robot_traj_st_t.to(self.device)
-                if type(map) == torch.Tensor:
-                    map = map.to(self.device)
-
                 # Run forward pass
-                encoder_output, predictions = model.predict(inputs=x,
+                decoder = self.node_models_dict[node_type][ens_index]
+                predictions = decoder.predict_decode(inputs=x,
                                             inputs_st=x_st_t,
                                             first_history_indices=first_history_index,
                                             neighbors=neighbors_data_st,
@@ -418,27 +430,20 @@ class TrajectronRisk(Trajectron):
                                             map=map,
                                             prediction_horizon=ph,
                                             num_samples=num_samples,
+                                            encoder_output=encoder_output,
                                             z_mode=z_mode,
                                             gmm_mode=gmm_mode,
                                             full_dist=full_dist,
                                             all_z_sep=all_z_sep)
-                x = encoder_output[0]
-                z = encoder_output[-1]
                 all_models_predictions.append(predictions)
                 encoded_inputs.append(x)
-                if (self.ensemble_method == 'clusterstack') and ens_index == 0:
-                    clusterstack_encoder_output = encoder_output
-
-                if (self.ensemble_method == 'boost') or (self.ensemble_method == 'gradboost'):
-                    gmm_params_prod = model.gmm_params # model's p_y_xz to use (prev) gmm_params_prod * new predicted gmm
 
             if all_models_predictions == []:
                 continue
 
-            features = encoded_inputs
             if (self.ensemble_method == 'clusterstack'):
-                x = clusterstack_encoder_output[0]
-                z = clusterstack_encoder_output[-1]
+                x = encoder_output[0]
+                z = encoder_output[-1]
                 # if features are zx not x:
                 z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
                 features = torch.cat([z_example_per_mode, x.repeat(z.shape[0], 1)], dim=1) 
