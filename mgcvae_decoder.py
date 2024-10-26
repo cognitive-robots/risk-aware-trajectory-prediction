@@ -12,7 +12,7 @@ from environment.scene_graph import DirectedEdge
 from mgcvae_risk import multiply_gmms, add_gmm_params
 # from ensemble_params import NUM_ENSEMBLE, activation_func
 
-class MultimodalGenerativeCVAEEncoder(MultimodalGenerativeCVAE):
+class MultimodalGenerativeCVAEDecoder(MultimodalGenerativeCVAE):
     def __init__(self,
                  env,
                  node_type,
@@ -260,8 +260,7 @@ class MultimodalGenerativeCVAEEncoder(MultimodalGenerativeCVAE):
                 z_mode=False,
                 gmm_mode=False,
                 full_dist=True,
-                all_z_sep=False,
-                encoder_output = None):
+                all_z_sep=False):
         """
         Predicts the future of a batch of nodes.
 
