@@ -11,7 +11,7 @@ from preprocessing_risk import get_timesteps_data
 import torch.nn as nn
 import wandb
 from skimage.util import random_noise
-
+from sklearn.cluster import MiniBatchKMeans
 
 STACKING_CHOOSE_ONE = False # for stack only
 INCR_ETA = False
@@ -19,6 +19,7 @@ INCR_ETA = False
 # if we're sweeping over these, these are ignored
 stacking_model_eta = 0.1 # for stack or stackboost
 
+# only for deep_clustering, the epoch is defined in train_risk for per_epoch deep_clustering
 CLUSTERSTACK_EPOCH = -1 # use -1 if want clustering for all epochs
 
 def create_stacking_model(env, model_registrar, input_dims, device, input_multiplier, num_models):
@@ -136,10 +137,11 @@ class TrajectronRisk(Trajectron):
         if not eta:
             eta = stacking_model_eta
 
-        if ensemble_method == 'clusterstack':
+        if 'clusterstack' in ensemble_method:
             self.agg_models = agg_models
             self.aggregation_func = self.clusterstacking
             self.stack_eta = eta
+            self.kmeans = {}
 
     def set_curr_iter(self, curr_iter):
         self.curr_iter = curr_iter
@@ -186,7 +188,7 @@ class TrajectronRisk(Trajectron):
             # map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise (randgaussmapnoise)
             map = map.to(self.device)
 
-        if self.ensemble_method == 'clusterstack':
+        if 'clusterstack' in self.ensemble_method:
             if epoch < CLUSTERSTACK_EPOCH:
                 encoder = self.node_models_dict[node_type]['encoder'] # only the first model's encoder is used
                 z, kl, input_embedding, dists = encoder.train_loss_encode(
@@ -246,12 +248,16 @@ class TrajectronRisk(Trajectron):
             zx_features = torch.cat([z_example_per_mode, x.repeat(self.z_dim[node_type], 1)], dim=1)       
             whitened = whiten(zx_features.cpu().detach().numpy())
 
-            if CLUSTERSTACK_EPOCH == -1: #do clustering every epoch
-                if self.clusters[node_type] is None:
-                    centroid, stacking_label = kmeans2(whitened, k=self.num_models, iter=10)
-                else: 
-                    centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=10)
-                self.clusters[node_type] = centroid
+            if CLUSTERSTACK_EPOCH == -1: #do clustering every epoch (normal)
+                if self.ensemble_method == 'clusterstackperepoch':
+                    stacking_label = self.kmeans[node_type].predict(whitened)
+                else:
+                    if self.clusters[node_type] is None:
+                        centroid, stacking_label = kmeans2(whitened, k=self.num_models, iter=10)
+                    else: 
+                        centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=10)
+                    self.clusters[node_type] = centroid
+
                 target = torch.tensor(stacking_label)
 
             else: #do clustering only for clusterstack_epoch
@@ -318,7 +324,7 @@ class TrajectronRisk(Trajectron):
         if type(map) == torch.Tensor:
             map = map.to(self.device)
             
-        if self.ensemble_method == 'clusterstack':
+        if 'clusterstack' in self.ensemble_method:
             # Encoder
             encoder = self.node_models_dict[node_type]['encoder'] 
             z, input_embedding, dists = encoder.eval_loss_encode(
@@ -441,7 +447,7 @@ class TrajectronRisk(Trajectron):
             if all_models_predictions == []:
                 continue
 
-            if (self.ensemble_method == 'clusterstack'):
+            if 'clusterstack' in self.ensemble_method:
                 x = encoder_output[0]
                 z = encoder_output[-1]
                 # if features are zx not x:
@@ -460,6 +466,83 @@ class TrajectronRisk(Trajectron):
                 predictions_dict[ts][nodes[i]] = np.transpose(predictions_np[:, [i]], (1, 0, 2, 3))
 
         return predictions_dict
+
+    # cluster functions
+    def cluster_init(self, node_type, batch_size):
+        if self.clusters[node_type] is None:
+            minibatch_kmeans = MiniBatchKMeans(n_clusters=self.num_models,
+                                    max_iter=10,
+                                    # random_state=0, # seed - use for debugging if needed
+                                    batch_size=batch_size,
+                                    n_init=1)
+        else:
+            minibatch_kmeans = MiniBatchKMeans(n_clusters=self.num_models,
+                                    init=self.clusters[node_type],
+                                    max_iter=10,
+                                    # random_state=0, # seed - use for debugging if needed
+                                    batch_size=batch_size,
+                                    n_init=1)
+        self.kmeans[node_type] = minibatch_kmeans
+    # for per_epoch clustering:
+    def clustering_step(self, zx_features, node_type):
+        whitened = whiten(zx_features.cpu().detach().numpy()) + 0.000000001 # for stable PSD matrix
+        self.kmeans[node_type] = self.kmeans[node_type].partial_fit(whitened)
+    def set_clusters(self, node_type):
+        self.clusters[node_type] = self.kmeans[node_type].cluster_centers_
+    # for per_batch clustering:
+    # def clustering_step(self, zx_features, node_type):
+    #     whitened = whiten(zx_features.cpu().detach().numpy()) + 0.000000001 # for stable PSD matrix
+    #     if self.clusters[node_type] is None:
+    #         centroid, _ = kmeans2(whitened, k=self.num_models, iter=10)
+    #     else: 
+    #         centroid, _ = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=10)
+    #     self.clusters[node_type] = centroid
+    def get_encoded_features(self, batch, node_type, heatmap_tensor, grid_tensor, epoch, gradboost_index=None):
+        (first_history_index,
+         x_t, y_t, x_st_t, y_st_t,
+         neighbors_data_st,
+         neighbors_edge_value,
+         robot_traj_st_t,
+         map,
+         #--------------ADDED--------------
+         x_unf_t,
+         map_name
+         #---------------------------------
+         ) = batch
+        x = x_t.to(self.device)
+        y = y_t.to(self.device)
+        #--------------ADDED--------------
+        x_unf = x_unf_t.to(self.device)
+        #---------------------------------
+        x_st_t = x_st_t.to(self.device)
+        y_st_t = y_st_t.to(self.device)
+        if robot_traj_st_t is not None:
+            robot_traj_st_t = robot_traj_st_t.to(self.device)
+        if type(map) == torch.Tensor:
+            # map = torch.tensor(random_noise(map.cpu()), dtype=torch.float) #Gaussian distributed additive noise (randgaussmapnoise)
+            map = map.to(self.device)
+        # Encoder
+        encoder = self.node_models_dict[node_type]['encoder'] 
+        z, kl, input_embedding, dists = encoder.train_loss_encode(
+                                inputs=x,
+                                inputs_st=x_st_t,
+                                first_history_indices=first_history_index,
+                                labels=y,
+                                labels_st=y_st_t,
+                                neighbors=restore(neighbors_data_st),
+                                neighbors_edge_value=restore(neighbors_edge_value),
+                                robot=robot_traj_st_t,
+                                map=map,
+                                prediction_horizon=self.ph,
+                                heatmap_tensor=heatmap_tensor,
+                                x_unf=x_unf,
+                                map_name=map_name,
+                                grid_tensor=grid_tensor)
+        x = input_embedding[0]
+        # cluster the zx into num_models clusters
+        z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
+        zx_features = torch.cat([z_example_per_mode, x.repeat(self.z_dim[node_type], 1)], dim=1)       
+        return zx_features
 
     def get_vel(self,
                 scene,
@@ -591,7 +674,7 @@ class TrajectronRisk(Trajectron):
                 z = encoder_output[-1]
                 all_models_predictions.append(predictions)
                 encoded_inputs.append(x)
-                if (self.ensemble_method == 'clusterstack') and ens_index == 0:
+                if ('clusterstack' in self.ensemble_method) and ens_index == 0:
                     clusterstack_encoder_output = encoder_output
 
                 if (self.ensemble_method == 'boost') or (self.ensemble_method == 'gradboost'):
@@ -601,7 +684,7 @@ class TrajectronRisk(Trajectron):
                 continue
 
             features = encoded_inputs
-            if (self.ensemble_method == 'clusterstack'):
+            if ('clusterstack' in self.ensemble_method):
                 x = clusterstack_encoder_output[0]
                 z = clusterstack_encoder_output[-1]
 

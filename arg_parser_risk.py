@@ -171,7 +171,7 @@ parser.add_argument('--save_every',
                     default=1)
 
 parser.add_argument("--ensemble_method",
-                    help="must be either 'bag' 'stack' 'boost' 'gradboost' or 'clusterstack' ",
+                    help="must be either 'clusterstack' or 'clusterstackperepoch' ",
                     type=str,
                     required=True)
 args = parser.parse_args()
