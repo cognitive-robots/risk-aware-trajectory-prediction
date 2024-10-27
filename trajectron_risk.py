@@ -145,13 +145,13 @@ class TrajectronRisk(Trajectron):
 
     def set_curr_iter(self, curr_iter):
         self.curr_iter = curr_iter
-        for node_dict, ens_index in self.node_models_dict.items():
-            for node_str, model in node_dict.items():
+        for node, ens_index_dict in self.node_models_dict.items():
+            for ens_index, model in ens_index_dict.items():
                 model.set_curr_iter(curr_iter)
 
     def set_annealing_params(self):
-        for node_dict, ens_index in self.node_models_dict.items():
-            for node_str, model in node_dict.items():
+        for node, ens_index_dict in self.node_models_dict.items():
+            for ens_index, model in ens_index_dict.items():
                 model.set_annealing_params()
 
     def step_annealers(self, node_type=None):

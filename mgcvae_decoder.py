@@ -50,6 +50,13 @@ class MultimodalGenerativeCVAEDecoder(MultimodalGenerativeCVAE):
         self.dynamic = dynamic_class(self.env.scenes[0].dt, dyn_limits, device,
                                      self.model_registrar, self.x_size, self.node_type_str)
     def create_node_models(self):
+        x_size = self.hyperparams['enc_rnn_dim_history']
+        z_size = self.hyperparams['N'] * self.hyperparams['K']
+        ################################
+        #   Discrete Latent Variable   #
+        ################################
+        self.latent = DiscreteLatent(self.hyperparams, self.device)
+        
         ####################
         #   Decoder LSTM   #
         ####################
