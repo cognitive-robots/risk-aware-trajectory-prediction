@@ -22,6 +22,8 @@ stacking_model_eta = 0.1 # for stack or stackboost
 # only for deep_clustering, the epoch is defined in train_risk for per_epoch deep_clustering
 CLUSTERSTACK_EPOCH = -1 # use -1 if want clustering for all epochs
 
+vicreg_eta = 0.1
+
 def create_stacking_model(env, model_registrar, input_dims, device, input_multiplier, num_models):
     models = {}
     for node_type in env.NodeType:
@@ -46,6 +48,39 @@ def mask_neighbors(neighbors, cond): #cond is an if condition like (mask == ens_
     for key in restored_neighbors.keys():
         neighbors_masked[key] = [restored_neighbors[key][i] for i in neighbor_inds]
     return neighbors_masked
+
+def vicreg_loss(x, y, sim_coeff=25, std_coeff=25, cov_coeff=1):
+        batch_size = x.shape[0]
+        num_features = x.shape[1]
+
+        repr_loss = F.mse_loss(x, y)
+
+        # x = torch.cat(FullGatherLayer.apply(x), dim=0)
+        # y = torch.cat(FullGatherLayer.apply(y), dim=0)
+        x = x - x.mean(dim=0)
+        y = y - y.mean(dim=0)
+
+        std_x = torch.sqrt(x.var(dim=0) + 0.0001)
+        std_y = torch.sqrt(y.var(dim=0) + 0.0001)
+        std_loss = torch.mean(F.relu(1 - std_x)) / 2 + torch.mean(F.relu(1 - std_y)) / 2
+
+        cov_x = (x.T @ x) / (batch_size - 1)
+        cov_y = (y.T @ y) / (batch_size - 1)
+        cov_loss = off_diagonal(cov_x).pow_(2).sum().div(
+            num_features
+        ) + off_diagonal(cov_y).pow_(2).sum().div(num_features)
+
+        loss = (
+            sim_coeff * repr_loss
+            + std_coeff * std_loss
+            + cov_coeff * cov_loss
+        )
+        return loss
+
+def off_diagonal(x):
+    n, m = x.shape
+    assert n == m
+    return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
 
 class TrajectronRisk(Trajectron):
 
@@ -248,6 +283,9 @@ class TrajectronRisk(Trajectron):
             zx_features = torch.cat([z_example_per_mode, x.repeat(self.z_dim[node_type], 1)], dim=1)       
             whitened = whiten(zx_features.cpu().detach().numpy())
 
+            # vicreg_loss_term = vicreg_loss(zx_features, zx_features_prime) * vicreg_eta
+
+
             if CLUSTERSTACK_EPOCH == -1: #do clustering every epoch (normal)
                 if self.ensemble_method == 'clusterstackperepoch':
                     stacking_label = self.kmeans[node_type].predict(whitened)
@@ -300,7 +338,7 @@ class TrajectronRisk(Trajectron):
 
             all_losses = torch.cat(per_example_losses)
             total_loss = train_loss_pt2(all_losses, kl_term, inf_term)
-            return total_loss + self.stacking_model_loss
+            return total_loss + self.stacking_model_loss #+ vicreg_loss_term
 
     def eval_loss(self, batch, node_type, gradboost_index=None):
         (first_history_index,
