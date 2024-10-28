@@ -21,8 +21,10 @@ class MultimodalGenerativeCVAEDecoder(MultimodalGenerativeCVAE):
                  hyperparams,
                  device,
                  edge_types,
+                 x_size,
                  log_writer=None):
         self.hyperparams = hyperparams
+        self.x_size = x_size
         self.env = env
         self.node_type_str = node_type
         self.node_type = node_type + str(ens_index)
@@ -50,13 +52,13 @@ class MultimodalGenerativeCVAEDecoder(MultimodalGenerativeCVAE):
         self.dynamic = dynamic_class(self.env.scenes[0].dt, dyn_limits, device,
                                      self.model_registrar, self.x_size, self.node_type_str)
     def create_node_models(self):
-        x_size = self.hyperparams['enc_rnn_dim_history']
+        x_size = self.x_size
         z_size = self.hyperparams['N'] * self.hyperparams['K']
         ################################
         #   Discrete Latent Variable   #
         ################################
         self.latent = DiscreteLatent(self.hyperparams, self.device)
-        
+
         ####################
         #   Decoder LSTM   #
         ####################
@@ -86,8 +88,6 @@ class MultimodalGenerativeCVAEDecoder(MultimodalGenerativeCVAE):
         self.add_submodule(self.node_type + '/decoder/proj_to_GMM_corrs',
                            model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
                                                      self.hyperparams['GMM_components']))
-        self.x_size = x_size
-        self.z_size = z_size
 
     def p_y_xz(self, mode, x, x_nr_t, y_r, n_s_t0, z_stacked, prediction_horizon, # to allow multiplying of gmms
                num_samples, num_components=1, gmm_mode=False):
@@ -115,7 +115,7 @@ class MultimodalGenerativeCVAEDecoder(MultimodalGenerativeCVAE):
 
         cell = self.node_modules[self.node_type + '/decoder/rnn_cell']
         initial_h_model = self.node_modules[self.node_type + '/decoder/initial_h']
-
+        # import pdb; pdb.set_trace()
         initial_state = initial_h_model(zx)
 
         log_pis, mus, log_sigmas, corrs, a_sample = [], [], [], [], []

@@ -34,9 +34,7 @@ def create_stacking_model(env, model_registrar, input_dims, device, input_multip
                                 nn.Linear(input_layer_size, hidden_layer_size).to(device),
                                 nn.BatchNorm1d(hidden_layer_size).to(device),
                                 nn.ReLU(),
-                                nn.Linear(hidden_layer_size, output_layer_size).to(device),
-                                nn.BatchNorm1d(hidden_layer_size).to(device),
-                                nn.ReLU()
+                                nn.Linear(hidden_layer_size, output_layer_size).to(device)
                                 )
         models[node_type] = model_registrar.get_model(str(node_type) + '/stacking_model', model_if_absent)
     return models
@@ -123,6 +121,7 @@ class TrajectronRisk(Trajectron):
                                                         self.hyperparams,
                                                         self.device,
                                                         edge_types,
+                                                        encoder.x_size,
                                                         log_writer=self.log_writer)
                     decoder.prev_gmm_params = None # only needed for boosting
                     self.node_models_dict[node_type][ens_index] = decoder
@@ -149,7 +148,7 @@ class TrajectronRisk(Trajectron):
                 ind = inds[i]
                 ret[:,i,:,:] = predictions[ind][:,i,:,:]
             return ret 
-
+        # import pdb; pdb.set_trace()
         model_output = self.agg_models[node_type](model_input) + 0.00001 # to keep from getting nans, [256]
         model_output = model_output.softmax(dim=1) # need it to predict a class (ie a model)
         model_inference = torch.argmax(model_output, dim=1) # index of most probably correct model, [256]

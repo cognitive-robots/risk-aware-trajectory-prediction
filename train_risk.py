@@ -27,7 +27,7 @@ import wandb
 wandb.login()
 # torch.autograd.set_detect_anomaly(True)
 args.vis_every = None # not using it atm
-NUM_ENSEMBLE = list(range(3))
+NUM_ENSEMBLE = list(range(32))
 
 # Define sweep config
 # sweep_configuration = {
@@ -357,7 +357,7 @@ def main():
                     # REMOVE_LATER = 0
                     trajectron.cluster_init(node_type, args.batch_size)
                     for batch in pbar:
-                        # if REMOVE_LATER > 3:
+                        # if REMOVE_LATER > 1:
                         #     break;
                         # REMOVE_LATER += 1
                         trajectron.set_curr_iter(curr_iter)
