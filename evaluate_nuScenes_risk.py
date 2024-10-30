@@ -31,9 +31,10 @@ parser.add_argument("--output_tag", help="name tag for output file", type=str)
 parser.add_argument("--node_type", help="node type to evaluate", type=str)
 parser.add_argument("--ensemble_method", help="'bag' 'stack' 'boost' 'gradboost' or 'clusterstack'", type=str)
 parser.add_argument("--prediction_horizon", nargs='+', help="prediction horizon", type=int, default=None)
-parser.add_argument("--num_ensemble", nargs='+', help="list model names", type=int, default=None)
+parser.add_argument("--num_models", help="list model names", type=int, default=None)
 args = parser.parse_args()
 
+num_ensemble = list(range(args.num_models))
 
 def compute_road_violations(predicted_trajs, map, channel):
     obs_map = 1 - map.data[..., channel, :, :] / 255
@@ -60,12 +61,12 @@ def load_model(model_dir, env, ts=100):
         hyperparams = json.load(config_json)
 
     trajectron = TrajectronRisk(model_registrar, hyperparams, None, 'cpu')
-    trajectron.set_environment(env, args.num_ensemble)
+    trajectron.set_environment(env, num_ensemble)
 
     # create aggregation model for stacking
     aggregation_model = None
     if 'stack' in args.ensemble_method:
-        num_models = len(args.num_ensemble)
+        num_models = len(num_ensemble)
         x_size = trajectron.x_size 
         z_dim = trajectron.z_dim
         zx_dim = trajectron.zx_dim

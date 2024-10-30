@@ -264,6 +264,7 @@ class MultimodalGenerativeCVAEDecoder(MultimodalGenerativeCVAE):
                 prediction_horizon,
                 num_samples,
                 encoder_output,
+                dists,
                 z_mode=False,
                 gmm_mode=False,
                 full_dist=True,
@@ -289,7 +290,9 @@ class MultimodalGenerativeCVAEDecoder(MultimodalGenerativeCVAE):
         """
         mode = ModeKeys.PREDICT
         (x, x_nr_t, y_r, n_s_t0, num_samples, num_components, z) = encoder_output
-
+        (latent, dynamic) = dists
+        self.latent = latent
+        self.dynamic = dynamic
 
         _, our_sampled_future = self.p_y_xz(mode, x, x_nr_t, y_r, n_s_t0, z,
                                             prediction_horizon,

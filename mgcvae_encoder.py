@@ -450,4 +450,4 @@ class MultimodalGenerativeCVAEEncoder(MultimodalGenerativeCVAE):
             encoder_output = (x, x_nr_t, y_r, n_s_t0, num_samples, num_components, z)
         else:
             (x, x_nr_t, y_r, n_s_t0, num_samples, num_components, z) = encoder_output
-        return encoder_output
+        return encoder_output, (self.latent, self.dynamic)
