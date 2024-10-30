@@ -20,7 +20,7 @@ INCR_ETA = False
 stacking_model_eta = 0.1 # for stack or stackboost
 
 # only for deep_clustering, the epoch is defined in train_risk for per_epoch deep_clustering
-CLUSTERSTACK_EPOCH = -1 # use -1 if want clustering for all epochs
+CLUSTERSTACK_EPOCH = 10 # use -1 if want clustering for all epochs
 
 vicreg_eta = 0.1
 
@@ -284,31 +284,30 @@ class TrajectronRisk(Trajectron):
 
             # vicreg_loss_term = vicreg_loss(zx_features, zx_features_prime) * vicreg_eta
 
-
-            if CLUSTERSTACK_EPOCH == -1: #do clustering every epoch (normal)
-                if self.ensemble_method == 'clusterstackperepoch':
-                    stacking_label = self.kmeans[node_type].predict(whitened)
-                else:
+            if self.ensemble_method == 'clusterstackperepoch':
+                stacking_label = self.kmeans[node_type].predict(whitened)
+                target = torch.tensor(stacking_label)
+            else:
+                if CLUSTERSTACK_EPOCH == -1: #do clustering every epoch (normal)
                     if self.clusters[node_type] is None:
                         centroid, stacking_label = kmeans2(whitened, k=self.num_models, iter=10)
                     else: 
                         centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=10)
                     self.clusters[node_type] = centroid
-
-                target = torch.tensor(stacking_label)
-
-            else: #do clustering only for clusterstack_epoch
-                if epoch == CLUSTERSTACK_EPOCH:
-                    if self.clusters[node_type] is None:
-                        centroid, stacking_label = kmeans2(whitened, k=self.num_models, iter=100)
-                    else: 
-                        centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=100)
-                    self.clusters[node_type] = centroid
                     target = torch.tensor(stacking_label)
-                elif epoch > CLUSTERSTACK_EPOCH:
-                    # just calculate labels based on self.clusters
-                    code, dist = vq(whitened, self.clusters[node_type])
-                    target = torch.tensor(code)
+
+                else: #do clustering only for clusterstack_epoch
+                    if epoch == CLUSTERSTACK_EPOCH:
+                        if self.clusters[node_type] is None:
+                            centroid, stacking_label = kmeans2(whitened, k=self.num_models, iter=100)
+                        else: 
+                            centroid, stacking_label = kmeans2(whitened, k=self.clusters[node_type], minit='matrix', iter=100)
+                        self.clusters[node_type] = centroid
+                        target = torch.tensor(stacking_label)
+                    elif epoch > CLUSTERSTACK_EPOCH:
+                        # just calculate labels based on self.clusters
+                        code, dist = vq(whitened, self.clusters[node_type])
+                        target = torch.tensor(code)
 
             # # if features are x, not zx:
             # target_per_mode = target.reshape(self.z_dim[node_type], -1).transpose(0,1)

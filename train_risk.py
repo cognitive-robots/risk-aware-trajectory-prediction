@@ -350,7 +350,7 @@ def main():
             
             model_registrar.to(args.device)
             train_dataset.augment = args.augment
-            if args.ensemble_method == 'clusterstackperepoch':
+            if args.ensemble_method == 'clusterstackperepoch' and epoch == 10:
                 for node_type, data_loader in train_data_loader.items():
                     curr_iter = curr_iter_node_type[node_type]
                     pbar = tqdm(data_loader, ncols=80)
