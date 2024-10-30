@@ -419,19 +419,6 @@ class TrajectronRisk(Trajectron):
             clusterstack_encoder_output = None
             # Encoder
             encoder = self.node_models_dict[node_type]['encoder'] 
-            encoder_output = encoder.predict_encode(inputs=x,
-                                        inputs_st=x_st_t,
-                                        first_history_indices=first_history_index,
-                                        neighbors=neighbors_data_st,
-                                        neighbors_edge_value=neighbors_edge_value,
-                                        robot=robot_traj_st_t,
-                                        map=map,
-                                        prediction_horizon=ph,
-                                        num_samples=num_samples,
-                                        z_mode=z_mode,
-                                        gmm_mode=gmm_mode,
-                                        full_dist=full_dist,
-                                        all_z_sep=all_z_sep)
             # Get Input data for node type and given timesteps
             batch = get_timesteps_data(env=self.env, scene=scene, t=timesteps, node_type=node_type, state=self.state,
                                     pred_state=self.pred_state, edge_types=encoder.edge_types,
@@ -460,6 +447,20 @@ class TrajectronRisk(Trajectron):
             if type(map) == torch.Tensor:
                 map = map.to(self.device)
 
+            encoder_output, dists = encoder.predict_encode(inputs=x,
+                                        inputs_st=x_st_t,
+                                        first_history_indices=first_history_index,
+                                        neighbors=neighbors_data_st,
+                                        neighbors_edge_value=neighbors_edge_value,
+                                        robot=robot_traj_st_t,
+                                        map=map,
+                                        prediction_horizon=ph,
+                                        num_samples=num_samples,
+                                        z_mode=z_mode,
+                                        gmm_mode=gmm_mode,
+                                        full_dist=full_dist,
+                                        all_z_sep=all_z_sep)
+
             for ens_index in num_ensemble_subset: # for each model in ensemble
                 # Run forward pass
                 decoder = self.node_models_dict[node_type][ens_index]
@@ -473,6 +474,7 @@ class TrajectronRisk(Trajectron):
                                             prediction_horizon=ph,
                                             num_samples=num_samples,
                                             encoder_output=encoder_output,
+                                            dists=dists,
                                             z_mode=z_mode,
                                             gmm_mode=gmm_mode,
                                             full_dist=full_dist,
