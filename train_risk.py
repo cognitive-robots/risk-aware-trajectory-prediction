@@ -15,6 +15,9 @@ import matplotlib.pyplot as plt
 from trajectron_risk import TrajectronRisk, create_stacking_model
 from preprocessing_risk import EnvironmentDatasetRisk
 from arg_parser_risk import args 
+sys.path.append("../UniTraj-private/vicreg")
+from get_embeddings import VICReg, CustomArgParser
+
 sys.path.append("./Trajectron-plus-plus/")
 sys.path.append("./Trajectron-plus-plus/trajectron")
 import visualization
@@ -27,7 +30,13 @@ import wandb
 wandb.login()
 # torch.autograd.set_detect_anomaly(True)
 args.vis_every = None # not using it atm
-NUM_ENSEMBLE = [0, 1, 2]
+NUM_ENSEMBLE = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+def exclude_bias_and_norm(p):
+    return p.ndim == 1
+
+import warnings
+warnings.filterwarnings('ignore')
 
 # Define sweep config
 # sweep_configuration = {
@@ -333,6 +342,21 @@ def main():
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
 
+    ### create vicreg ###
+    vicreg_args = CustomArgParser()
+    # vicreg_args.batch_size = args.batch_size
+    vicreg = VICReg(vicreg_args).cuda(args.device)
+    vicreg = nn.SyncBatchNorm.convert_sync_batchnorm(vicreg)
+    if (vicreg_args.exp_dir / "model{}.pth".format(vicreg_args.suffix)).is_file():
+        ckpt = torch.load(vicreg_args.exp_dir / "model{}.pth".format(vicreg_args.suffix), map_location="cpu")
+        model_ckpt = ckpt["model"]
+        model_ckpt = {
+            key.replace("module.", ""): value
+            for (key, value) in model_ckpt.items()
+        }
+        vicreg.load_state_dict(model_ckpt)
+    vicreg.eval()
+
     #################################
     #           TRAINING            #
     #################################
@@ -364,7 +388,9 @@ def main():
                     trajectron.step_annealers(node_type)
                     optimizer[node_type].zero_grad()
                     # -------- ADDED HEATMAP_TENSOR & WANDB -------
-                    train_loss = trajectron.train_loss(batch, node_type, heatmap_tensor, grid_tensor, epoch, gradboost_index)
+                    train_loss = trajectron.train_loss(batch, node_type, 
+                                                       heatmap_tensor, grid_tensor, 
+                                                       epoch, vicreg, gradboost_index)
                     train_losses.append(train_loss.item())
                     counts.append(batch[0].shape[0])
                     # -------------------------------------
@@ -496,7 +522,7 @@ def main():
                             # if REMOVE_LATER > 3:
                             #     break;
                             # REMOVE_LATER += 1                        
-                            eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type, gradboost_index)
+                            eval_loss_node_type = eval_trajectron.eval_loss(batch, node_type, vicreg, gradboost_index)
                             eval_losses_to_average.append(eval_loss_node_type)
                             counts.append(batch[0].shape[0])
                             pbar.set_description(f"Epoch {epoch}, {node_type} L: {eval_loss_node_type.item():.2f}")
@@ -524,6 +550,7 @@ def main():
                         predictions = eval_trajectron.predict(scene,
                                                             timesteps,
                                                             ph,
+                                                            vicreg,
                                                             last_model_index=gradboost_index,
                                                             num_samples=mink,
                                                             min_future_timesteps=ph,
@@ -553,42 +580,43 @@ def main():
                     #                             bar_plot=['kde'],
                     #                             box_plot=['ade', 'fde'])
 
-                    # Predict maximum likelihood batch timesteps for evaluation dataset evaluation
-                    eval_batch_errors_ml = []
-                    # REMOVE_LATER = 0
-                    for scene in tqdm(eval_scenes, desc='MM Evaluation', ncols=80):
-                        # if REMOVE_LATER > 3:
-                        #     break;
-                        # REMOVE_LATER += 1   
-                        timesteps = scene.sample_timesteps(scene.timesteps)
+                    # # Predict maximum likelihood batch timesteps for evaluation dataset evaluation
+                    # eval_batch_errors_ml = []
+                    # # REMOVE_LATER = 0
+                    # for scene in tqdm(eval_scenes, desc='MM Evaluation', ncols=80):
+                    #     # if REMOVE_LATER > 3:
+                    #     #     break;
+                    #     # REMOVE_LATER += 1   
+                    #     timesteps = scene.sample_timesteps(scene.timesteps)
 
-                        predictions = eval_trajectron.predict(scene,
-                                                            timesteps,
-                                                            ph,
-                                                            num_samples=1,
-                                                            min_future_timesteps=ph,
-                                                            last_model_index=gradboost_index,
-                                                            z_mode=True,
-                                                            gmm_mode=True,
-                                                            full_dist=False)
+                    #     predictions = eval_trajectron.predict(scene,
+                    #                                         timesteps,
+                    #                                         ph,
+                    #                                         vicreg,
+                    #                                         num_samples=1,
+                    #                                         min_future_timesteps=ph,
+                    #                                         last_model_index=gradboost_index,
+                    #                                         z_mode=True,
+                    #                                         gmm_mode=True,
+                    #                                         full_dist=False)
 
-                        eval_batch_errors_ml.append(evaluation.compute_batch_statistics(predictions,
-                                                                                        scene.dt,
-                                                                                        max_hl=max_hl,
-                                                                                        ph=ph,
-                                                                                        map=scene.map,
-                                                                                        node_type_enum=eval_env.NodeType,
-                                                                                        kde=False))
-                    for node_type in eval_env.NodeType:
-                        fdes = []
-                        for scene_errors in eval_batch_errors_ml:
-                            fdes.extend(scene_errors[node_type]['fde'])
-                        wandb.log({"fde_ml_errors{} {}".format(label, node_type): np.mean(fdes)})
+                    #     eval_batch_errors_ml.append(evaluation.compute_batch_statistics(predictions,
+                    #                                                                     scene.dt,
+                    #                                                                     max_hl=max_hl,
+                    #                                                                     ph=ph,
+                    #                                                                     map=scene.map,
+                    #                                                                     node_type_enum=eval_env.NodeType,
+                    #                                                                     kde=False))
+                    # for node_type in eval_env.NodeType:
+                    #     fdes = []
+                    #     for scene_errors in eval_batch_errors_ml:
+                    #         fdes.extend(scene_errors[node_type]['fde'])
+                    #     wandb.log({"fde_ml_errors{} {}".format(label, node_type): np.mean(fdes)})
 
-                    # evaluation.log_batch_errors(eval_batch_errors_ml,
-                    #                             log_writer,
-                    #                             'eval/ml',
-                    #                             epoch)
+                    # # evaluation.log_batch_errors(eval_batch_errors_ml,
+                    # #                             log_writer,
+                    # #                             'eval/ml',
+                    # #                             epoch)
 
             if args.save_every is not None and args.debug is False and epoch % args.save_every == 0:
                 model_registrar.save_models(epoch)

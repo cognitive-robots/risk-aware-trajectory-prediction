@@ -7,6 +7,16 @@ import sys
 sys.path.append("./Trajectron-plus-plus/trajectron")
 from model.dataset.preprocessing import collate, get_relative_robot_traj
 from model.dataset.dataset import EnvironmentDataset, NodeTypeDataset
+sys.path.append("../UniTraj-private/vicreg")
+from get_embeddings import get_embeddings
+
+import pickle
+import sklearn
+import matplotlib.pyplot as plt
+
+d_clusterpcagm = pickle.load(open('clusterpcagm_colormaponly.pkl', 'rb'))
+GM = d_clusterpcagm['gm']
+PCA = d_clusterpcagm['clusterpca']
 
 class EnvironmentDatasetRisk(EnvironmentDataset):
     def __init__(self, env, state, pred_state, node_freq_mult, scene_freq_mult, hyperparams, **kwargs):
@@ -146,6 +156,7 @@ def get_node_timestep_data(env, scene, t, node, state, pred_state,
 
     # Map
     map_tuple = None
+    viz_map_tuple = None
     if hyperparams['use_map_encoding']:
         if node.type in hyperparams['map_encoder']:
             if node.non_aug_node is not None:
@@ -163,11 +174,13 @@ def get_node_timestep_data(env, scene, t, node, state, pred_state,
                 heading_angle = None
 
             scene_map = scene.map[node.type]
+            viz_scene_map = scene.map['VISUALIZATION']
             map_point = x[-1, :2]
 
 
             patch_size = hyperparams['map_encoder'][node.type]['patch_size']
             map_tuple = (scene_map, map_point, heading_angle, patch_size)
+            viz_map_tuple = (viz_scene_map, map_point, heading_angle, [ps*3 for ps in patch_size])
             #--------------ADDED--------------
     map_name = scene.map_name
     if map_name == 'boston-seaport':
@@ -182,9 +195,28 @@ def get_node_timestep_data(env, scene, t, node, state, pred_state,
         map_num = 0
     
     map_num_t = torch.tensor(map_num, dtype=torch.float)
-            
+
+    # # calculate cluster for this scene
+    # viz_map = scene.map['VISUALIZATION']
+    # viz_map = viz_map.as_image()
+    # extent = [-viz_map.shape[1]/2., viz_map.shape[1]/2., -viz_map.shape[0]/2., viz_map.shape[0]/2. ]
+    # plt.imshow(viz_map, origin='lower', extent=extent, alpha=0.5)
+    # plt.axis('off')
+    # plt.savefig('media/images{}/autobot/temp.png'.format(suffix), 
+    #             dpi=200, bbox_inches='tight', pad_inches=0)
+
+    # # get embeddings
+    # xemb, yemb = get_embeddings() #runs model_colormaponly.pth
+    # xemb = np.concatenate(xemb, 0)
+
+    # # calculate cluster_assignment
+    # pca_embedding = PCA.transform(xemb)
+    # label = GM.predict(pca_embedding) 
+    # label = torch.tensor(label[0])
+    # label=0
+
     return (first_history_index, x_t, y_t, x_st_t, y_st_t, neighbors_data_st,
-            neighbors_edge_value, robot_traj_st_t, map_tuple,
+            neighbors_edge_value, robot_traj_st_t, map_tuple, viz_map_tuple,
             x_unf_t, map_num_t)
             #---------------------------------
 

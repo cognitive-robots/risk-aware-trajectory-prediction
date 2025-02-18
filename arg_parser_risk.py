@@ -17,6 +17,15 @@ parser.add_argument("--preprocess_workers",
 
 
 # Model Parameters
+parser.add_argument("--model", 
+                    help="model full path", 
+                    type=str,
+                    default='')
+parser.add_argument("--checkpoint", 
+                    help="model checkpoint to evaluate", 
+                    type=int,
+                    default=0)
+
 parser.add_argument("--offline_scene_graph",
                     help="whether to precompute the scene graphs offline, options are 'no' and 'yes'",
                     type=str,
@@ -171,7 +180,8 @@ parser.add_argument('--save_every',
                     default=1)
 
 parser.add_argument("--ensemble_method",
-                    help="must be either 'bag' 'stack' 'boost' 'gradboost' or 'clusterstack' ",
+                    help="must be either 'bag' 'stack' 'boost' 'gradboost' 'clusterstack' \
+                          or 'cluster' (pretrained clusters)",
                     type=str,
                     required=True)
 args = parser.parse_args()

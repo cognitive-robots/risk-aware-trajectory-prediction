@@ -10,7 +10,7 @@ from preprocessing_risk import get_timesteps_data
 import torch.nn as nn
 import wandb
 from skimage.util import random_noise
-
+import pickle
 
 STACKING_CHOOSE_ONE = False # for stack only
 INCR_ETA = False
@@ -19,7 +19,11 @@ INCR_ETA = False
 STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 stacking_model_eta = 0.1 # for stack or stackboost
 
-CLUSTERSTACK_EPOCH = 10
+CLUSTERSTACK_EPOCH = 0
+
+d_clusterpcagm = pickle.load(open('clusterpcagm_colormaponly.pkl', 'rb'))
+GM = d_clusterpcagm['gm']
+PCA = d_clusterpcagm['clusterpca']
 
 def create_stacking_model(env, model_registrar, input_dims, device, input_multiplier, num_models):
     models = {}
@@ -81,9 +85,21 @@ class TrajectronRisk(Trajectron):
         self.z_dim = z_dim
         self.zx_dim = zx
 
+    def clustering(self, predictions, inds, node_type=None, predict=False): # losses is either losses or predictions
+        # TODO if this works, refactor so this doesn't make inference run 10x as much as it needs to
+
+        # only used for predict
+        if predict:
+            ret = torch.zeros(predictions[0].shape).to(self.device)
+            for i in range(inds.shape[0]):
+                ind = inds[i]
+                ret[:,i,:,:] = predictions[ind][:,i,:,:]
+            return ret             
+
+
     def bagging(self, losses, encoded_inputs=None, node_type=None, predict=False): # losses is either losses or predictions
         return torch.mean(torch.stack(losses), dim=0)
-    
+
     def boosting(self, losses, encoded_inputs=None, node_type=None, predict=False): # losses is either losses or predictions
         if predict:
             predictions = losses # if predict is true, the losses are actually predictions
@@ -178,6 +194,9 @@ class TrajectronRisk(Trajectron):
         if ensemble_method == 'bag':
             self.aggregation_func = self.bagging
 
+        if ensemble_method == 'cluster':
+            self.aggregation_func = self.clustering
+
         if (self.ensemble_method == 'boost') or (self.ensemble_method == 'gradboost'):
             self.aggregation_func = self.boosting
 
@@ -210,7 +229,8 @@ class TrajectronRisk(Trajectron):
             else:
                 self.node_models_dict[ens_index][node_type].step_annealers()
 
-    def train_loss(self, batch, node_type, heatmap_tensor, grid_tensor, epoch, gradboost_index=None):
+    def train_loss(self, batch, node_type, heatmap_tensor, 
+                   grid_tensor, epoch, vicreg, gradboost_index=None):
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
@@ -218,10 +238,23 @@ class TrajectronRisk(Trajectron):
          robot_traj_st_t,
          map,
          #--------------ADDED--------------
+         viz_map,
          x_unf_t,
-         map_name
+         map_name,
          #---------------------------------
          ) = batch
+        ##### run vicreg ######
+        viz_map[viz_map == 0] = 0.5
+        viz_map = viz_map.cuda(self.device, non_blocking=True)
+        batch_embs = []
+        for batch_viz_map in torch.split(viz_map, 32): # batch size 32
+            batch_embs.append(vicreg.projector(vicreg.backbone(batch_viz_map)).detach().cpu())
+        emb = torch.cat(batch_embs, 0)
+        # emb = vicreg.projector(vicreg.backbone(viz_map)).detach().cpu()
+        # calculate cluster_assignment
+        pca_embedding = PCA.transform(emb)
+        cluster_assignment = GM.predict(pca_embedding)
+        cluster_assignment = torch.from_numpy(cluster_assignment)
 
         x = x_t.to(self.device)
         y = y_t.to(self.device)
@@ -450,8 +483,80 @@ class TrajectronRisk(Trajectron):
             all_losses = torch.cat(per_example_losses)
             total_loss = train_loss_pt2(all_losses, kl_term, inf_term)
             return total_loss + self.stacking_model_loss
+        
+        if self.ensemble_method == 'cluster':
+            if epoch < CLUSTERSTACK_EPOCH:
+                # loss for every model, average model losses
+                losses = []
+                for ens_index in self.num_ensemble: # for each model in ensemble
+                    # Run forward pass
+                    model = self.node_models_dict[ens_index][node_type]
+                    loss = model.train_loss(inputs=x,
+                                            inputs_st=x_st_t,
+                                            first_history_indices=first_history_index,
+                                            labels=y,
+                                            labels_st=y_st_t,
+                                            neighbors=restore(neighbors_data_st),
+                                            neighbors_edge_value=restore(neighbors_edge_value),
+                                            robot=robot_traj_st_t,
+                                            map=map,
+                                            prediction_horizon=self.ph,
+                                            heatmap_tensor=heatmap_tensor,
+                                            x_unf=x_unf,
+                                            map_name=map_name,
+                                            grid_tensor=grid_tensor)
+                    losses.append(loss)
+                ret = self.bagging(losses)
+                return ret
 
-    def eval_loss(self, batch, node_type, gradboost_index=None):
+            else:
+                losses = []
+                encoded_inputs = []
+                kls = []
+                infs = []
+                for ens_index in self.num_ensemble: # for each model in ensemble
+
+                    mask_indices = torch.where(cluster_assignment == ens_index)
+                    if  len(mask_indices[0]) == 0: #none for model ens_index in this batch
+                        continue
+
+                    # Run forward pass
+                    model = self.node_models_dict[ens_index][node_type]
+                    encoded_input, per_example_loss, kl_term, inf_term = model.train_loss_pt1(inputs=x[mask_indices],
+                                            inputs_st=x_st_t[mask_indices],
+                                            first_history_indices=first_history_index[mask_indices],
+                                            labels=y[mask_indices],
+                                            labels_st=y_st_t[mask_indices],
+                                            neighbors=mask_neighbors(restore(neighbors_data_st), 
+                                                                     cluster_assignment == ens_index),
+                                            neighbors_edge_value=mask_neighbors(restore(neighbors_edge_value), 
+                                                                                cluster_assignment == ens_index),
+                                            robot=robot_traj_st_t,
+                                            map=map[mask_indices],
+                                            prediction_horizon=self.ph,
+                                            heatmap_tensor=heatmap_tensor,
+                                            x_unf=x_unf[mask_indices],
+                                            map_name=map_name[mask_indices],
+                                            grid_tensor=grid_tensor)
+                    wandb.log({"{} train_loss_{}".format(str(node_type), 
+                                    ens_index): train_loss_pt2(per_example_loss, kl_term, inf_term).item()})
+                    losses.append(per_example_loss)
+                    encoded_inputs.append(encoded_input)
+                    kls.append(kl_term)
+                    infs.append(inf_term)
+
+                # concatenate all losses
+                aggregated_losses = torch.cat(losses, dim=0)
+ 
+                # kl and inf should be weighted mean based on how many of the examples were from each model
+                freqs = torch.bincount(cluster_assignment).to(self.device)
+                weights = freqs / cluster_assignment.shape[0]
+                aggregated_kl = (torch.stack(kls)@weights[weights != 0])
+                aggregated_inf = (torch.stack(infs)@weights[weights != 0])
+
+            return train_loss_pt2(aggregated_losses, aggregated_kl, aggregated_inf)
+
+    def eval_loss(self, batch, node_type, vicreg, gradboost_index=None):
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
@@ -459,10 +564,23 @@ class TrajectronRisk(Trajectron):
          robot_traj_st_t,
          map,
          #--------------ADDED--------------
+         viz_map,
          x_unf_t,
-         map_name
+         map_name,
          #---------------------------------
          ) = batch
+        ##### run vicreg ######
+        viz_map[viz_map == 0] = 0.5
+        viz_map = viz_map.cuda(self.device, non_blocking=True)
+        batch_embs = []
+        for batch_viz_map in torch.split(viz_map, 32): # batch size 32
+            batch_embs.append(vicreg.projector(vicreg.backbone(batch_viz_map)).detach().cpu())
+        emb = torch.cat(batch_embs, 0)
+        # emb = vicreg.projector(vicreg.backbone(viz_map)).detach().cpu()
+        # calculate cluster_assignment
+        pca_embedding = PCA.transform(emb)
+        cluster_assignment = GM.predict(pca_embedding)
+        cluster_assignment = torch.from_numpy(cluster_assignment)
 
         x = x_t.to(self.device)
         y = y_t.to(self.device)
@@ -565,7 +683,37 @@ class TrajectronRisk(Trajectron):
                 encoded_inputs.append(encoded_input)
             aggregated = self.aggregation_func(nlls, encoded_inputs, node_type)
             return eval_loss_pt2(aggregated).cpu().detach().numpy()
-            
+        
+
+
+        if self.ensemble_method == 'cluster':
+            nlls = []
+            for ens_index in self.num_ensemble: # for each model in ensemble
+                
+                mask_indices = torch.where(cluster_assignment == ens_index)
+                if  len(mask_indices[0]) == 0: #none for model ens_index in this batch
+                    continue
+
+                # Run forward pass
+                model = self.node_models_dict[ens_index][node_type]
+                encoded_input, nll = model.eval_loss_pt1(inputs=x[mask_indices],
+                                    inputs_st=x_st_t[mask_indices],
+                                    first_history_indices=first_history_index[mask_indices],
+                                    labels=y[mask_indices],
+                                    labels_st=y_st_t[mask_indices],
+                                    neighbors=mask_neighbors(restore(neighbors_data_st), 
+                                                                cluster_assignment == ens_index),
+                                    neighbors_edge_value=mask_neighbors(restore(neighbors_edge_value), 
+                                                                cluster_assignment == ens_index),
+                                    robot=robot_traj_st_t,
+                                    map=map[mask_indices],
+                                    prediction_horizon=self.ph)
+                wandb.log({"{} eval_loss_{}".format(str(node_type), ens_index): eval_loss_pt2(nll).item()})
+                nlls.append(nll)
+            # concatenate all losses
+            aggregated_nlls = torch.cat(nlls, dim=0)
+            return eval_loss_pt2(aggregated_nlls).cpu().detach().numpy()
+                    
         if self.ensemble_method == 'clusterstack':
             # Encoder
             model = self.node_models_dict[0][node_type] # only the first model's encoder is used
@@ -602,6 +750,7 @@ class TrajectronRisk(Trajectron):
                 scene,
                 timesteps,
                 ph,
+                vicreg,
                 last_model_index = None, 
                 num_samples=1,
                 min_future_timesteps=0,
@@ -619,6 +768,39 @@ class TrajectronRisk(Trajectron):
         for node_type in self.env.NodeType:
             if node_type not in self.pred_state:
                 continue
+
+            # Get Input data for node type and given timesteps
+            batch = get_timesteps_data(env=self.env, scene=scene, t=timesteps, node_type=node_type, state=self.state,
+                                    pred_state=self.pred_state, edge_types=self.node_models_dict[0][node_type].edge_types,
+                                    min_ht=min_history_timesteps, max_ht=self.max_ht, min_ft=min_future_timesteps,
+                                    max_ft=min_future_timesteps, hyperparams=self.hyperparams)
+            # There are no nodes of type present for timestep
+            if batch is None:
+                # print('BATCH IS NONE')
+                continue
+            (first_history_index,
+            x_t, y_t, x_st_t, y_st_t,
+            neighbors_data_st,
+            neighbors_edge_value,
+            robot_traj_st_t,
+            map,
+            #--------------ADDED--------------
+            viz_map,
+            x_unf_t,
+            map_name,
+            #---------------------------------
+            ), nodes, timesteps_o = batch
+            ##### run vicreg ######
+            viz_map[viz_map == 0] = 0.5
+            viz_map = viz_map.cuda(self.device, non_blocking=True)
+            batch_embs = []
+            for batch_viz_map in torch.split(viz_map, 32): # batch size 32
+                batch_embs.append(vicreg.projector(vicreg.backbone(batch_viz_map)).detach().cpu())
+            emb = torch.cat(batch_embs, 0)
+            # calculate cluster_assignment
+            pca_embedding = PCA.transform(emb)
+            cluster_assignment = GM.predict(pca_embedding)
+
             all_models_predictions = []
             encoded_inputs = []
             gmm_params_prod = None
@@ -627,27 +809,6 @@ class TrajectronRisk(Trajectron):
 
                 model = self.node_models_dict[ens_index][node_type]
                 model.prev_gmm_params = gmm_params_prod # None for all except boost
-
-                # Get Input data for node type and given timesteps
-                batch = get_timesteps_data(env=self.env, scene=scene, t=timesteps, node_type=node_type, state=self.state,
-                                        pred_state=self.pred_state, edge_types=model.edge_types,
-                                        min_ht=min_history_timesteps, max_ht=self.max_ht, min_ft=min_future_timesteps,
-                                        max_ft=min_future_timesteps, hyperparams=self.hyperparams)
-                # There are no nodes of type present for timestep
-                if batch is None:
-                    # print('BATCH IS NONE')
-                    continue
-                (first_history_index,
-                x_t, y_t, x_st_t, y_st_t,
-                neighbors_data_st,
-                neighbors_edge_value,
-                robot_traj_st_t,
-                map,
-                #--------------ADDED--------------
-                x_unf_t,
-                map_name
-                #---------------------------------
-                ), nodes, timesteps_o = batch
 
                 x = x_t.to(self.device)
                 x_st_t = x_st_t.to(self.device)
@@ -690,13 +851,16 @@ class TrajectronRisk(Trajectron):
                 # if features are zx not x:
                 z_example_per_mode = torch.reshape(z, (-1, self.z_dim[node_type]))
                 features = torch.cat([z_example_per_mode, x.repeat(z.shape[0], 1)], dim=1) 
+            if (self.ensemble_method == 'cluster'):
+                features = cluster_assignment
 
             aggregated_ensemble_predictions = self.aggregation_func(all_models_predictions, 
                                                                     features, node_type, 
                                                                     predict=True)
+            
+            # Assign predictions to node
             predictions_np = aggregated_ensemble_predictions.cpu().detach().numpy()
 
-            # Assign predictions to node
             for i, ts in enumerate(timesteps_o):
                 if ts not in predictions_dict.keys():
                     predictions_dict[ts] = dict()
@@ -740,10 +904,13 @@ class TrajectronRisk(Trajectron):
              robot_traj_st_t,
              map,
             #--------------ADDED--------------
+            viz_map,
              x_unf_t,
-             map_name
+             map_name,
+            #  cluster_assignment,
             #---------------------------------
             ), nodes, timesteps_o = batch
+            cluster_assignment = 0
             vel_list = []
             vel_array = np.array(vel_list)
             x = x_t.to(self.device)
@@ -803,11 +970,14 @@ class TrajectronRisk(Trajectron):
                 neighbors_edge_value,
                 robot_traj_st_t,
                 map,
+                viz_map,
                 #--------------ADDED--------------
                 x_unf_t,
-                map_name
+                map_name,
+                # cluster_assignment,
                 #---------------------------------
                 ), nodes, timesteps_o = batch
+                cluster_assignment = 0
 
                 x = x_t.to(self.device)
                 x_st_t = x_st_t.to(self.device)
