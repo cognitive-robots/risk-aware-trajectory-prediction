@@ -16,6 +16,9 @@ import evaluation
 import utils
 from scipy.interpolate import RectBivariateSpline
 
+NUM_ENSEMBLE = [0, 1, 2, 3, 4, 5, 6, 7]
+
+
 seed = 0
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -60,12 +63,12 @@ def load_model(model_dir, env, ts=100):
         hyperparams = json.load(config_json)
 
     trajectron = TrajectronRisk(model_registrar, hyperparams, None, 'cpu')
-    trajectron.set_environment(env, args.num_ensemble)
+    trajectron.set_environment(env, NUM_ENSEMBLE)
 
     # create aggregation model for stacking
     aggregation_model = None
     if 'stack' in args.ensemble_method:
-        num_models = len(args.num_ensemble)
+        num_models = len(NUM_ENSEMBLE)
         x_size = trajectron.x_size 
         z_dim = trajectron.z_dim
         zx_dim = trajectron.zx_dim
@@ -132,6 +135,7 @@ if __name__ == "__main__":
                 # eval_ade_batch_errors = np.hstack((eval_ade_batch_errors, batch_error_dict[args.node_type]['ade']))
                 eval_fde_batch_errors = np.hstack((eval_fde_batch_errors, batch_error_dict[args.node_type]['fde']))
 
+            import pdb; pdb.set_trace()
             # pd.DataFrame({'value': eval_ade_batch_errors, 'metric': 'ade', 'type': 'ml'}
             #              ).to_csv(os.path.join(args.output_path, args.output_tag + "_" + str(ph) + '_ade_most_likely_z.csv'))
             pd.DataFrame({'value': eval_fde_batch_errors, 'metric': 'fde', 'type': 'ml'}

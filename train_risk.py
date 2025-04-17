@@ -30,7 +30,7 @@ import wandb
 wandb.login()
 # torch.autograd.set_detect_anomaly(True)
 args.vis_every = None # not using it atm
-NUM_ENSEMBLE = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+NUM_ENSEMBLE = [0, 1, 2, 3, 4, 5, 6, 7]
 
 def exclude_bias_and_norm(p):
     return p.ndim == 1
@@ -149,7 +149,7 @@ def main():
     run = wandb.init(
         # mode="disabled", # for testing
         # Set the project where this run will be logged
-        project="train-risk",
+        project="train-risk", # id="y6lrgg27", resume="must",
         # Track hyperparameters and run metadata
         config={
             "learning_rate": hyperparams['learning_rate'],

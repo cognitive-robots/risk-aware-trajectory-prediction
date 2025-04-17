@@ -7,6 +7,7 @@ from model.trajectron import Trajectron
 from model.dataset.preprocessing import restore
 from mgcvae_risk import MultimodalGenerativeCVAERisk, train_loss_pt2, eval_loss_pt2
 from preprocessing_risk import get_timesteps_data
+from get_trajtype import get_traj_type
 import torch.nn as nn
 import wandb
 from skimage.util import random_noise
@@ -19,11 +20,11 @@ INCR_ETA = False
 STACKBOOST_PERCENTAGE = 0.5 # for stackboost
 stacking_model_eta = 0.1 # for stack or stackboost
 
-CLUSTERSTACK_EPOCH = 0
+CLUSTERSTACK_EPOCH = 12
 
-d_clusterpcagm = pickle.load(open('clusterpcagm_colormaponly.pkl', 'rb'))
-GM = d_clusterpcagm['gm']
-PCA = d_clusterpcagm['clusterpca']
+# d_clusterpcagm = pickle.load(open('clusterpcagm_colormaponly.pkl', 'rb'))
+# GM = d_clusterpcagm['gm']
+# PCA = d_clusterpcagm['clusterpca']
 
 def create_stacking_model(env, model_registrar, input_dims, device, input_multiplier, num_models):
     models = {}
@@ -244,17 +245,22 @@ class TrajectronRisk(Trajectron):
          #---------------------------------
          ) = batch
         ##### run vicreg ######
-        viz_map[viz_map == 0] = 0.5
-        viz_map = viz_map.cuda(self.device, non_blocking=True)
-        batch_embs = []
-        for batch_viz_map in torch.split(viz_map, 32): # batch size 32
-            batch_embs.append(vicreg.projector(vicreg.backbone(batch_viz_map)).detach().cpu())
-        emb = torch.cat(batch_embs, 0)
-        # emb = vicreg.projector(vicreg.backbone(viz_map)).detach().cpu()
-        # calculate cluster_assignment
-        pca_embedding = PCA.transform(emb)
-        cluster_assignment = GM.predict(pca_embedding)
-        cluster_assignment = torch.from_numpy(cluster_assignment)
+        # viz_map[viz_map == 0] = 0.5
+        # viz_map = viz_map.cuda(self.device, non_blocking=True)
+        # batch_embs = []
+        # for batch_viz_map in torch.split(viz_map, 32): # batch size 32
+        #     batch_embs.append(vicreg.projector(vicreg.backbone(batch_viz_map)).detach().cpu())
+        # emb = torch.cat(batch_embs, 0)
+        # # emb = vicreg.projector(vicreg.backbone(viz_map)).detach().cpu()
+        # # calculate cluster_assignment
+        # pca_embedding = PCA.transform(emb)
+        # cluster_assignment = GM.predict(pca_embedding)
+        # cluster_assignment = torch.from_numpy(cluster_assignment)
+
+        ##### run trajtypes ############
+        cluster_assignment = get_traj_type(x_t, node_type).to(self.device)
+        first_history_index = first_history_index.to(self.device)
+        map_name = map_name.to(self.device)
 
         x = x_t.to(self.device)
         y = y_t.to(self.device)
@@ -532,7 +538,7 @@ class TrajectronRisk(Trajectron):
                                             neighbors_edge_value=mask_neighbors(restore(neighbors_edge_value), 
                                                                                 cluster_assignment == ens_index),
                                             robot=robot_traj_st_t,
-                                            map=map[mask_indices],
+                                            map=map[mask_indices] if type(map) == torch.Tensor else map,
                                             prediction_horizon=self.ph,
                                             heatmap_tensor=heatmap_tensor,
                                             x_unf=x_unf[mask_indices],
@@ -570,17 +576,22 @@ class TrajectronRisk(Trajectron):
          #---------------------------------
          ) = batch
         ##### run vicreg ######
-        viz_map[viz_map == 0] = 0.5
-        viz_map = viz_map.cuda(self.device, non_blocking=True)
-        batch_embs = []
-        for batch_viz_map in torch.split(viz_map, 32): # batch size 32
-            batch_embs.append(vicreg.projector(vicreg.backbone(batch_viz_map)).detach().cpu())
-        emb = torch.cat(batch_embs, 0)
-        # emb = vicreg.projector(vicreg.backbone(viz_map)).detach().cpu()
-        # calculate cluster_assignment
-        pca_embedding = PCA.transform(emb)
-        cluster_assignment = GM.predict(pca_embedding)
-        cluster_assignment = torch.from_numpy(cluster_assignment)
+        # viz_map[viz_map == 0] = 0.5
+        # viz_map = viz_map.cuda(self.device, non_blocking=True)
+        # batch_embs = []
+        # for batch_viz_map in torch.split(viz_map, 32): # batch size 32
+        #     batch_embs.append(vicreg.projector(vicreg.backbone(batch_viz_map)).detach().cpu())
+        # emb = torch.cat(batch_embs, 0)
+        # # emb = vicreg.projector(vicreg.backbone(viz_map)).detach().cpu()
+        # # calculate cluster_assignment
+        # pca_embedding = PCA.transform(emb)
+        # cluster_assignment = GM.predict(pca_embedding)
+        # cluster_assignment = torch.from_numpy(cluster_assignment)
+
+        ##### run trajtypes ########
+        cluster_assignment = get_traj_type(x_t, node_type).to(self.device)
+        first_history_index = first_history_index.to(self.device)
+        map_name = map_name.to(self.device)
 
         x = x_t.to(self.device)
         y = y_t.to(self.device)
@@ -706,7 +717,7 @@ class TrajectronRisk(Trajectron):
                                     neighbors_edge_value=mask_neighbors(restore(neighbors_edge_value), 
                                                                 cluster_assignment == ens_index),
                                     robot=robot_traj_st_t,
-                                    map=map[mask_indices],
+                                    map=map[mask_indices] if type(map) == torch.Tensor else map,
                                     prediction_horizon=self.ph)
                 wandb.log({"{} eval_loss_{}".format(str(node_type), ens_index): eval_loss_pt2(nll).item()})
                 nlls.append(nll)
@@ -750,7 +761,7 @@ class TrajectronRisk(Trajectron):
                 scene,
                 timesteps,
                 ph,
-                vicreg,
+                vicreg=None,
                 last_model_index = None, 
                 num_samples=1,
                 min_future_timesteps=0,
@@ -790,16 +801,19 @@ class TrajectronRisk(Trajectron):
             map_name,
             #---------------------------------
             ), nodes, timesteps_o = batch
-            ##### run vicreg ######
-            viz_map[viz_map == 0] = 0.5
-            viz_map = viz_map.cuda(self.device, non_blocking=True)
-            batch_embs = []
-            for batch_viz_map in torch.split(viz_map, 32): # batch size 32
-                batch_embs.append(vicreg.projector(vicreg.backbone(batch_viz_map)).detach().cpu())
-            emb = torch.cat(batch_embs, 0)
-            # calculate cluster_assignment
-            pca_embedding = PCA.transform(emb)
-            cluster_assignment = GM.predict(pca_embedding)
+            # ##### run vicreg ######
+            # viz_map[viz_map == 0] = 0.5
+            # viz_map = viz_map.cuda(self.device, non_blocking=True)
+            # batch_embs = []
+            # for batch_viz_map in torch.split(viz_map, 32): # batch size 32
+            #     batch_embs.append(vicreg.projector(vicreg.backbone(batch_viz_map)).detach().cpu())
+            # emb = torch.cat(batch_embs, 0)
+            # # calculate cluster_assignment
+            # pca_embedding = PCA.transform(emb)
+            # cluster_assignment = GM.predict(pca_embedding)
+
+            ###### run trajtypes ##########
+            cluster_assignment = get_traj_type(x_t, node_type).to(self.device)
 
             all_models_predictions = []
             encoded_inputs = []
@@ -977,7 +991,7 @@ class TrajectronRisk(Trajectron):
                 # cluster_assignment,
                 #---------------------------------
                 ), nodes, timesteps_o = batch
-                cluster_assignment = 0
+                cluster_assignment = get_traj_type(x_t, node_type).to(self.device)
 
                 x = x_t.to(self.device)
                 x_st_t = x_st_t.to(self.device)
