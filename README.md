@@ -2,7 +2,7 @@
 
 This repository corresponds to the official source code of the paper:
 
-<a href="TODO arxiv link">Risk-aware Trajectory Prediction by Incorporating Spatio-temporal Traffic Interaction Analysis</a>
+<a href="https://arxiv.org/abs/2407.10639">Risk-aware Trajectory Prediction by Incorporating Spatio-temporal Traffic Interaction Analysis</a>
 
 ### Repo Depenencies
 1. Clone the git repository
